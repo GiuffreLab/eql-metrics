@@ -10,7 +10,6 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
-using System.Windows.Shapes;
 using System.Windows.Threading;
 using EqlMetrics.Core;
 using Microsoft.Win32;
@@ -181,7 +180,9 @@ namespace EqlMetrics
                 if (DetailPanel.Visibility == Visibility.Visible)
                 {
                     BuildCombatants(s);
+                    BuildEnemy(s);
                     BuildBreakdown(s);
+                    BuildHeals(s);
                     BuildSessionStats(s);
                     BuildLoot(s);
                 }
@@ -200,7 +201,7 @@ namespace EqlMetrics
         private void BuildCombatants(SessionStats s)
         {
             CombatantList.Children.Clear();
-            var list = s.Combatants.OrderByDescending(c => c.TotalDamage).ToList();
+            var list = s.Friendlies.OrderByDescending(c => c.TotalDamage).ToList();
             if (list.Count == 0) { CombatantList.Children.Add(Hint("no combat recorded yet")); return; }
             long top = Math.Max(1, list[0].TotalDamage);
             long grand = Math.Max(1, list.Sum(c => c.TotalDamage));
@@ -221,6 +222,15 @@ namespace EqlMetrics
                     selected: string.Equals(name, _selected, StringComparison.OrdinalIgnoreCase),
                     onClick: () => { _selected = name; Refresh(); }));
             }
+        }
+
+        private void BuildEnemy(SessionStats s)
+        {
+            EnemyPanel.Children.Clear();
+            EnemyPanel.Children.Add(StatBox("Incoming me", s.IncomingDpsMe.ToString("0.0"), DmgIn));
+            if (s.HasPet)
+                EnemyPanel.Children.Add(StatBox("Incoming pet", s.IncomingDpsPet.ToString("0.0"), DmgIn));
+            EnemyPanel.Children.Add(StatBox("Enemy HPS", s.EnemyHps.ToString("0.0"), Nuke));
         }
 
         private void BuildBreakdown(SessionStats s)
@@ -245,12 +255,39 @@ namespace EqlMetrics
                     _ => ("MELEE", Melee),
                 };
                 double dps = a.Total / s.SessionSeconds;
-                string sub = $"x{a.Hits}   avg {a.Avg:0.0}   max {a.Max}" + (a.Misses > 0 ? $"   miss {a.MissPct:0}%" : "");
+                string sub = $"x{a.Hits}   avg {a.Avg:0.0}   max {a.Max}"
+                    + (a.Crits > 0 ? $"   crit {a.CritPct:0}%" : "")
+                    + (a.Misses > 0 ? $"   miss {a.MissPct:0}%" : "");
                 AbilityList.Children.Add(Row(
                     left: a.Name, leftSub: sub, right: dps.ToString("0.0"),
                     rightSub: (100.0 * a.Total / tot).ToString("0") + "%",
                     frac: (double)a.Total / top, accent: bc, rightBrush: bc,
                     badge: bt, badgeBrush: bc));
+            }
+        }
+
+        private void BuildHeals(SessionStats s)
+        {
+            HealList.Children.Clear();
+            var heals = s.HealsByAmount.Where(h => h.Effective > 0).ToList();
+            if (heals.Count == 0)
+            {
+                HealSummary.Text = "";
+                HealList.Children.Add(Hint("no healing yet"));
+                return;
+            }
+            HealSummary.Text = $"{s.Hps:0.0} HPS  ·  {s.OverhealPct:0}% overheal";
+            long top = Math.Max(1, heals[0].Effective);
+            long tot = Math.Max(1, heals.Sum(h => h.Effective));
+            foreach (var h in heals)
+            {
+                double hps = h.Effective / s.SessionSeconds;
+                string sub = $"x{h.Casts}   avg {h.Avg:0.0}   max {h.Max}   overheal {h.OverhealPct:0}%";
+                HealList.Children.Add(Row(
+                    left: h.Name, leftSub: sub, right: hps.ToString("0.0"),
+                    rightSub: (100.0 * h.Effective / tot).ToString("0") + "%",
+                    frac: (double)h.Effective / top, accent: Heal, rightBrush: Heal,
+                    badge: "HEAL", badgeBrush: Heal));
             }
         }
 
@@ -266,16 +303,20 @@ namespace EqlMetrics
             Add("Kills/hr", s.KillsPerHour.ToString("0"), Text);
             Add("XP/hr", s.XpPerHour.ToString("0.0") + "%", Xp);
             Add("To level", s.HoursToLevel.HasValue ? FmtHours(s.HoursToLevel.Value) : "—", Text);
-            Add("Dmg taken/hr", FmtNum(s.DamageTakenPerHour), DmgIn);
+            Add("AA gained", s.AbilityPoints.ToString("0"), Xp);
+            Add("AA/hr", s.AaPerHour.ToString("0.0"), Xp);
             Add("Coin/hr", s.CoinPerHour.ToString("0.0") + "p", Gold);
             Add("Motes/hr", s.MotesPerHour.ToString("0"), Mote);
             Add("Best hit", bestHit.ToString("0"), Text);
+            Add("Overheal", s.OverhealPct.ToString("0") + "%", Heal);
         }
 
         private void BuildLoot(SessionStats s)
         {
             LootList.Children.Clear();
-            var recent = s.Loot.AsEnumerable().Reverse().Take(6).ToList();
+            int n = _settings.LootExpanded ? 10 : 2;
+            LootToggle.Text = _settings.LootExpanded ? "show less ▴" : "show more ▾";
+            var recent = s.Loot.AsEnumerable().Reverse().Take(n).ToList();
             if (recent.Count == 0) { LootList.Children.Add(Hint("nothing looted yet")); return; }
             foreach (var l in recent)
             {
@@ -294,7 +335,7 @@ namespace EqlMetrics
             var barGrid = new Grid();
             barGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(frac, GridUnitType.Star) });
             barGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1 - frac, GridUnitType.Star) });
-            var bar = new Rectangle { RadiusX = 6, RadiusY = 6, Fill = accent, Opacity = 0.16 };
+            var bar = new System.Windows.Shapes.Rectangle { RadiusX = 6, RadiusY = 6, Fill = accent, Opacity = 0.16 };
             Grid.SetColumn(bar, 0);
             barGrid.Children.Add(bar);
 
@@ -463,6 +504,12 @@ namespace EqlMetrics
 
         private void BtnClickThru_Click(object sender, RoutedEventArgs e) => ToggleClickThrough();
         private void BtnClose_Click(object sender, RoutedEventArgs e) => Close();
+
+        private void LootToggle_Click(object sender, MouseButtonEventArgs e)
+        {
+            _settings.LootExpanded = !_settings.LootExpanded;
+            Refresh();
+        }
 
         // ============ click-through (Win32) ============
         private const int GWL_EXSTYLE = -20;

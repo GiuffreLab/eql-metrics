@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
     <UseWPF>true</UseWPF>
@@ -10,7 +10,7 @@
     <AssemblyName>EqlMetrics</AssemblyName>
     <RootNamespace>EqlMetrics</RootNamespace>
     <ApplicationIcon></ApplicationIcon>
-    <!-- Single-file friendly; publish with: dotnet publish -c Release -r win-x64 --self-contained -->
+    <!-- For a standalone .exe, see the publish command in README.md -->
   </PropertyGroup>
 
 </Project>

@@ -14,6 +14,7 @@ namespace EqlMetrics.Core
         public double Left { get; set; } = 60;
         public double Top { get; set; } = 60;
         public bool Expanded { get; set; } = true;
+        public bool LootExpanded { get; set; } = false;   // loot list: false = last 2, true = last 10
         public bool ClickThrough { get; set; } = false;
         public bool FollowFromStart { get; set; } = false; // start at end of file (live) by default
 

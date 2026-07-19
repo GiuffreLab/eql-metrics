@@ -5,14 +5,14 @@ character log file and shows live combat and session metrics: player / pet / com
 DPS, a per-ability damage breakdown, healing, currency per hour, motes per hour,
 XP per hour and time-to-level, kills, damage taken, and a live loot feed.
 
-Built with C# / .NET 8 (WPF). Windows only.
+Built with C# / .NET 10 (WPF). Windows only.
 
 ---
 
 ## Build & run
 
-You need the **.NET 8 SDK** (https://dotnet.microsoft.com/download). Then, from this
-folder:
+You need the **.NET 10 SDK** (https://dotnet.microsoft.com/download/dotnet/10.0). Then,
+from this folder:
 
 ```powershell
 dotnet run -c Release
@@ -28,7 +28,7 @@ title bar and pick your character log.
 dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
 ```
 
-The exe lands in `bin\Release\net8.0-windows\win-x64\publish\EqlMetrics.exe`.
+The exe lands in `bin\Release\net10.0-windows\win-x64\publish\EqlMetrics.exe`.
 
 ---
 

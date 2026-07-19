@@ -106,8 +106,11 @@
             <!-- ===== detail (collapsible) ===== -->
             <StackPanel x:Name="DetailPanel" Margin="13,2,13,4">
 
-                <TextBlock Text="COMBATANTS" Foreground="#7C8AA0" FontSize="10" FontWeight="Bold" Margin="0,6,0,6"/>
+                <TextBlock Text="PARTY DAMAGE" Foreground="#7C8AA0" FontSize="10" FontWeight="Bold" Margin="0,6,0,6"/>
                 <StackPanel x:Name="CombatantList"/>
+
+                <TextBlock Text="INCOMING / ENEMY" Foreground="#7C8AA0" FontSize="10" FontWeight="Bold" Margin="0,10,0,6"/>
+                <WrapPanel x:Name="EnemyPanel"/>
 
                 <DockPanel Margin="0,10,0,6">
                     <TextBlock Text="ABILITY BREAKDOWN" Foreground="#7C8AA0" FontSize="10" FontWeight="Bold" VerticalAlignment="Center"/>
@@ -115,10 +118,20 @@
                 </DockPanel>
                 <StackPanel x:Name="AbilityList"/>
 
+                <DockPanel x:Name="HealHeader" Margin="0,12,0,6">
+                    <TextBlock Text="HEALING" Foreground="#7C8AA0" FontSize="10" FontWeight="Bold" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="HealSummary" DockPanel.Dock="Right" Text="" Foreground="#57D6A6" FontSize="10" FontWeight="SemiBold" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                </DockPanel>
+                <StackPanel x:Name="HealList"/>
+
                 <TextBlock Text="SESSION" Foreground="#7C8AA0" FontSize="10" FontWeight="Bold" Margin="0,12,0,6"/>
                 <WrapPanel x:Name="SessionStatsPanel"/>
 
-                <TextBlock Text="RECENT LOOT" Foreground="#7C8AA0" FontSize="10" FontWeight="Bold" Margin="0,12,0,6"/>
+                <DockPanel Margin="0,12,0,6">
+                    <TextBlock Text="RECENT LOOT" Foreground="#7C8AA0" FontSize="10" FontWeight="Bold" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="LootToggle" DockPanel.Dock="Right" Text="show more &#9662;" Foreground="#5AA9FF" FontSize="10" FontWeight="SemiBold"
+                               HorizontalAlignment="Right" VerticalAlignment="Center" Cursor="Hand" MouseLeftButtonUp="LootToggle_Click"/>
+                </DockPanel>
                 <StackPanel x:Name="LootList"/>
             </StackPanel>
 
