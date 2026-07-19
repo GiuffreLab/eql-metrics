@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>EqlMetrics</AssemblyName>
+    <RootNamespace>EqlMetrics</RootNamespace>
+    <ApplicationIcon></ApplicationIcon>
+    <!-- Single-file friendly; publish with: dotnet publish -c Release -r win-x64 --self-contained -->
+  </PropertyGroup>
+
+</Project>

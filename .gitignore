@@ -1,0 +1,13 @@
+# build output
+bin/
+obj/
+publish/
+*.user
+
+# IDE
+.vs/
+.idea/
+*.suo
+
+# app runtime
+# (settings live in %APPDATA%\EqlMetrics\settings.json, not in the repo)

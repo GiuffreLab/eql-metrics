@@ -1,0 +1,135 @@
+<Window x:Class="EqlMetrics.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="EQL Metrics"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ResizeMode="NoResize"
+        SizeToContent="Height"
+        ShowInTaskbar="True"
+        UseLayoutRounding="True"
+        TextOptions.TextFormattingMode="Ideal"
+        FontFamily="Segoe UI"
+        Width="330">
+
+    <Window.Resources>
+        <!-- keep every glyph crisp over any game background -->
+        <Style TargetType="TextBlock">
+            <Setter Property="Effect">
+                <Setter.Value>
+                    <DropShadowEffect BlurRadius="3" ShadowDepth="1" Direction="270" Color="Black" Opacity="0.9"/>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- title-bar icon button -->
+        <Style x:Key="IconBtn" TargetType="Button">
+            <Setter Property="Width" Value="20"/>
+            <Setter Property="Height" Value="20"/>
+            <Setter Property="Margin" Value="2,0,0,0"/>
+            <Setter Property="Foreground" Value="#B7C2D4"/>
+            <Setter Property="Background" Value="#14FFFFFF"/>
+            <Setter Property="BorderBrush" Value="#33A0C0FF"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="b" CornerRadius="5" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="b" Property="Background" Value="#2A5AA9FF"/>
+                                <Setter Property="Foreground" Value="#EAF3FF"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Border x:Name="Root" CornerRadius="13" BorderBrush="#33A0C0FF" BorderThickness="1">
+        <Border.Background>
+            <SolidColorBrush x:Name="Backdrop" Color="#0E1220" Opacity="0.42"/>
+        </Border.Background>
+        <StackPanel>
+
+            <!-- ===== title bar ===== -->
+            <Border x:Name="TitleBar" CornerRadius="12,12,0,0" Padding="9,7"
+                    MouseLeftButtonDown="TitleBar_MouseDown">
+                <Border.Background>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                        <GradientStop Color="#1A5AA9FF" Offset="0"/>
+                        <GradientStop Color="#055AA9FF" Offset="1"/>
+                    </LinearGradientBrush>
+                </Border.Background>
+                <DockPanel>
+                    <TextBlock Text="&#9670;" Foreground="#5AA9FF" FontSize="12" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <TextBlock Text="EQL Metrics" Foreground="#EAF3FF" FontWeight="Bold" FontSize="12" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="CharLabel" Text="" Foreground="#8A97AB" FontSize="11" Margin="7,0,0,0" VerticalAlignment="Center"/>
+
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button x:Name="BtnPick"      Style="{StaticResource IconBtn}" Content="&#128193;" ToolTip="Pick log file" Click="BtnPick_Click"/>
+                        <Button x:Name="BtnReset"     Style="{StaticResource IconBtn}" Content="&#8635;"    ToolTip="Reset session" Click="BtnReset_Click"/>
+                        <Button x:Name="BtnDimDown"   Style="{StaticResource IconBtn}" Content="&#9788;"    ToolTip="More transparent" Click="BtnDimDown_Click"/>
+                        <Button x:Name="BtnDimUp"     Style="{StaticResource IconBtn}" Content="&#9728;"    ToolTip="More solid" Click="BtnDimUp_Click"/>
+                        <Button x:Name="BtnClickThru" Style="{StaticResource IconBtn}" Content="&#8856;"    ToolTip="Toggle click-through (Ctrl+Alt+X)" Click="BtnClickThru_Click"/>
+                        <Button x:Name="BtnExpand"    Style="{StaticResource IconBtn}" Content="&#9633;"    ToolTip="Expand / collapse" Click="BtnExpand_Click"/>
+                        <Button x:Name="BtnClose"     Style="{StaticResource IconBtn}" Content="&#10005;"   ToolTip="Close" Click="BtnClose_Click"/>
+                    </StackPanel>
+                </DockPanel>
+            </Border>
+
+            <!-- ===== summary (always visible) ===== -->
+            <StackPanel Margin="13,10,13,6">
+                <DockPanel Margin="0,0,0,6">
+                    <TextBlock x:Name="EncounterName" Text="no fight yet" Foreground="#8A97AB" FontSize="11" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="EncounterTime" DockPanel.Dock="Right" Text="" Foreground="#8A97AB" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                </DockPanel>
+
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock x:Name="BigDps" Text="0" Foreground="#EAF3FF" FontSize="38" FontWeight="Bold"/>
+                    <TextBlock Text="DPS" Foreground="#8A97AB" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Bottom" Margin="7,0,0,7"/>
+                    <TextBlock x:Name="DpsSplit" Text="" Foreground="#8A97AB" FontSize="11" VerticalAlignment="Bottom" Margin="10,0,0,8"/>
+                </StackPanel>
+
+                <!-- mini rates -->
+                <UniformGrid x:Name="MiniRates" Columns="4" Margin="0,8,0,0"/>
+            </StackPanel>
+
+            <!-- ===== detail (collapsible) ===== -->
+            <StackPanel x:Name="DetailPanel" Margin="13,2,13,4">
+
+                <TextBlock Text="COMBATANTS" Foreground="#7C8AA0" FontSize="10" FontWeight="Bold" Margin="0,6,0,6"/>
+                <StackPanel x:Name="CombatantList"/>
+
+                <DockPanel Margin="0,10,0,6">
+                    <TextBlock Text="ABILITY BREAKDOWN" Foreground="#7C8AA0" FontSize="10" FontWeight="Bold" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="BreakdownWho" DockPanel.Dock="Right" Text="" Foreground="#5AA9FF" FontSize="10" FontWeight="SemiBold" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                </DockPanel>
+                <StackPanel x:Name="AbilityList"/>
+
+                <TextBlock Text="SESSION" Foreground="#7C8AA0" FontSize="10" FontWeight="Bold" Margin="0,12,0,6"/>
+                <WrapPanel x:Name="SessionStatsPanel"/>
+
+                <TextBlock Text="RECENT LOOT" Foreground="#7C8AA0" FontSize="10" FontWeight="Bold" Margin="0,12,0,6"/>
+                <StackPanel x:Name="LootList"/>
+            </StackPanel>
+
+            <!-- ===== footer ===== -->
+            <Border Padding="13,7" BorderBrush="#22A0C0FF" BorderThickness="0,1,0,0" CornerRadius="0,0,12,12">
+                <DockPanel>
+                    <TextBlock x:Name="StatusText" Text="no log loaded" Foreground="#6A768A" FontSize="10" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="SessionTimer" DockPanel.Dock="Right" Text="00:00:00" Foreground="#8A97AB" FontSize="10" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                </DockPanel>
+            </Border>
+
+        </StackPanel>
+    </Border>
+</Window>
