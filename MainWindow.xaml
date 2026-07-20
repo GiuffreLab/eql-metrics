@@ -73,6 +73,7 @@
                     <TextBlock x:Name="CharLabel" Text="" Foreground="#8A97AB" FontSize="11" Margin="7,0,0,0" VerticalAlignment="Center"/>
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
                         <Button x:Name="BtnPick"      Style="{StaticResource IconBtn}" Content="&#128193;" ToolTip="Pick log file" Click="BtnPick_Click"/>
+                        <Button x:Name="BtnUpdateSpells" Style="{StaticResource IconBtn}" Content="&#11015;" ToolTip="Update spell data from the EQL wiki" Click="BtnUpdateSpells_Click"/>
                         <Button x:Name="BtnReset"     Style="{StaticResource IconBtn}" Content="&#8635;"    ToolTip="Reset session" Click="BtnReset_Click"/>
                         <Button x:Name="BtnDimDown"   Style="{StaticResource IconBtn}" Content="&#9788;"    ToolTip="More transparent" Click="BtnDimDown_Click"/>
                         <Button x:Name="BtnDimUp"     Style="{StaticResource IconBtn}" Content="&#9728;"    ToolTip="More solid" Click="BtnDimUp_Click"/>
@@ -81,6 +82,19 @@
                         <Button x:Name="BtnClose"     Style="{StaticResource IconBtn}" Content="&#10005;"   ToolTip="Close" Click="BtnClose_Click"/>
                     </StackPanel>
                 </DockPanel>
+            </Border>
+
+            <!-- ===== spell-data update toast / progress (collapsible) ===== -->
+            <Border x:Name="ToastArea" Visibility="Collapsed" Margin="10,8,10,0" Padding="11,7" CornerRadius="9"
+                    Background="#14FFFFFF" BorderBrush="#454B54" BorderThickness="1">
+                <StackPanel>
+                    <DockPanel>
+                        <TextBlock x:Name="ToastIcon" Text="&#11015;" Foreground="#C9A24B" FontSize="11" VerticalAlignment="Center" Margin="0,0,7,0"/>
+                        <TextBlock x:Name="ToastText" Text="" Foreground="#E8EEF7" FontSize="11.5" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                    </DockPanel>
+                    <ProgressBar x:Name="ToastBar" Height="3" Margin="0,6,0,0" Minimum="0" Maximum="100" Value="0"
+                                 Background="Transparent" Foreground="#C9A24B" BorderThickness="0"/>
+                </StackPanel>
             </Border>
 
             <!-- ===== core strip (always visible) ===== -->
@@ -118,14 +132,7 @@
                 <StackPanel x:Name="LootPanel"/>
             </StackPanel>
 
-            <!-- ===== active buffs + fade notices (expands from the bottom) ===== -->
-            <Border x:Name="FadeArea" Visibility="Collapsed" Margin="10,4,10,2" Padding="10,8" CornerRadius="10"
-                    Background="#12FFFFFF" BorderBrush="#454B54" BorderThickness="1">
-                <StackPanel>
-                    <TextBlock Text="&#9670;  BUFFS" Foreground="#C9A24B" FontSize="9.5" FontWeight="Bold" Margin="0,0,0,5"/>
-                    <StackPanel x:Name="FadePanel"/>
-                </StackPanel>
-            </Border>
+            <!-- buff/debuff notices now use the center-screen CenterFlash instead of a bottom tray -->
 
             <!-- ===== footer ===== -->
             <Border Padding="13,7" BorderBrush="#2B313A" BorderThickness="0,1,0,0" CornerRadius="0,0,12,12">

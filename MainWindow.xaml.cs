@@ -4,6 +4,8 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -30,9 +32,20 @@ namespace EqlMetrics
         private DateTime? _selEncStart;        // selected encounter (null = latest)
         private Dictionary<string, double> _buffDur = new(StringComparer.OrdinalIgnoreCase);
         private Dictionary<string, BuffCat> _buffCat = new(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<string, Border> _fadeChips = new();
-        private const double FadeLingerSec = 18;   // how long a "faded" notice lingers
-        private const double GainLingerSec = 6;    // how long a "gained" notice lingers
+        // center-screen notifications (stealth, buffs, Quick Buff) via CenterFlash
+        private CenterFlash? _flash;
+        private DateTime _lastStealthTime = DateTime.MinValue;
+        private DateTime _lastGainTime = DateTime.MinValue;
+        private DateTime _lastFadeTime = DateTime.MinValue;
+        private DateTime _lastSkillTime = DateTime.MinValue;
+        private DateTime _lastMissFlash = DateTime.MinValue;
+        private const double MissFlashGapSec = 3.0;   // throttle miss popups (frontal backstab misses spam otherwise)
+        private DateTime _lastCleaveTime = DateTime.MinValue;          // cursor into s.CleaveHits
+        private readonly List<CleaveHit> _cleaveBurst = new();         // pending same-actor+skill AoE burst
+        private DateTime _cleaveBurstWall = DateTime.MinValue;         // wall-clock of the last hit added (for settle)
+        private DateTime _lastMendTime = DateTime.MinValue;            // cursor into s.MendEvents
+        private DateTime? _qbNotifiedFor;   // Quick Buff activation we've already flashed "ready" for
+        private const double FreshSec = 8;  // ignore events older than this (skips historical log replay on load)
 
         // ---- palette ----
         private static SolidColorBrush B(string hex)
@@ -50,6 +63,21 @@ namespace EqlMetrics
         private static readonly Brush RowBg = B("#0DFFFFFF"), RowStroke = B("#2A313B"), RowStrokeSel = B("#66C9A24B");
         private static readonly Brush TabSel = B("#2AC9A24B");
         private static readonly Brush AccentGold = B("#C9A24B");   // subtle default_modern chrome accent
+
+        // ---- center-flash accent colors ----
+        private static Color C(byte r, byte g, byte b) => Color.FromRgb(r, g, b);
+        private static readonly Color FlHide = C(0xA8, 0x8B, 0xFF);   // violet
+        private static readonly Color FlSneak = C(0x7F, 0xE0, 0xD0);  // teal
+        private static readonly Color FlFail = C(0xFF, 0x6B, 0x6B);   // red (hide/sneak failed)
+        private static readonly Color FlGain = C(0x57, 0xD6, 0xA6);   // green (buff gained)
+        private static readonly Color FlFade = C(0xFF, 0x7A, 0x7A);   // red (buff faded)
+        private static readonly Color FlDebuff = C(0xFF, 0x9F, 0x5A); // orange (debuff wore off)
+        private static readonly Color FlQuickBuff = C(0xF4, 0xC8, 0x5B); // gold (Quick Buff ready)
+        private static readonly Color FlSkill = C(0x5A, 0xD6, 0xC4);     // teal (skill proc, e.g. backstab)
+        private static readonly Color FlSkillCrit = C(0xFF, 0xC8, 0x5B); // bright gold (skill crit)
+        private static readonly Color FlSkillMiss = C(0xC9, 0x7A, 0x7A); // muted red (skill miss)
+        private static readonly Color FlCleave = C(0xFF, 0x8A, 0x5A);    // orange (multi-target cleave / round kick)
+        private static readonly Color FlMend = C(0x57, 0xD6, 0xA6);      // green (Mend self-heal)
 
         public MainWindow()
         {
@@ -97,6 +125,8 @@ namespace EqlMetrics
             _settings.PanelAlpha = Backdrop.Opacity;
             _settings.Save();
             BuffStore.Save(_buffDur, _buffCat);
+            try { _spellCts?.Cancel(); } catch { }
+            try { _flash?.Close(); } catch { }
             try { _tailer?.Stop(); } catch { }
             try { UnregisterHotKey(new WindowInteropHelper(this).Handle, HOTKEY_ID); } catch { }
         }
@@ -170,7 +200,7 @@ namespace EqlMetrics
 
                 BuildCoreRates(s);
 
-                BuildFades(s);
+                CheckNotifications(s);
                 if (BiggestStrip.Visibility == Visibility.Visible) BuildBiggest(s);
 
                 if (MaxPanel.Visibility == Visibility.Visible)
@@ -195,114 +225,177 @@ namespace EqlMetrics
             CoreRates.Children.Add(Chip("XP/HR", s.XpPerHour.ToString("0.0") + "%", "", Xp));
         }
 
-        private sealed class TrayItem { public string Spell = ""; public BuffCat Cat; public string Who = ""; public bool Faded; public double Age; }
-        private sealed class TrayRefs { public Border Glow = null!; public TextBlock Title = null!, Detail = null!, Sub = null!; public bool Faded; }
-
-        private static readonly Brush FadedBrush = B("#FF7A7A");  // red: faded
-        private static readonly Brush GainBrush = B("#57D6A6");   // green: landed
-
-        // A bottom tray that expands from the window only when something changes: a brief
-        // green "<spell> gained" when a buff lands, and a red pulse "<spell> fades from
-        // <who>" when one wears off. Both linger a few seconds then clear — no standing
-        // list (the game's own buff bar already shows what's currently up).
-        private void BuildFades(SessionStats s)
-        {
-            var now = DateTime.Now;
-            var items = new Dictionary<string, TrayItem>(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var g in s.Buffs.RecentGains(now, GainLingerSec))   // brief "landed" notices
-                items[g.Name] = new TrayItem { Spell = g.Name, Cat = g.Category, Who = WhoFor(s, g), Faded = false, Age = (now - g.Time).TotalSeconds };
-            foreach (var f in s.Buffs.RecentFades(now, FadeLingerSec))   // a fade replaces the gain notice
-                items[f.Name] = new TrayItem { Spell = f.Name, Cat = f.Category, Who = WhoFor(s, f), Faded = true, Age = (now - f.Time).TotalSeconds };
-
-            foreach (var kv in items)
-            {
-                if (!_fadeChips.TryGetValue(kv.Key, out var chip))
-                {
-                    chip = MakeTrayChip(kv.Value);
-                    _fadeChips[kv.Key] = chip;
-                    FadePanel.Children.Insert(0, chip);
-                }
-                UpdateTrayChip(chip, kv.Value);
-            }
-            foreach (var key in _fadeChips.Keys.ToList())
-                if (!items.ContainsKey(key)) { FadePanel.Children.Remove(_fadeChips[key]); _fadeChips.Remove(key); }
-
-            FadeArea.Visibility = _fadeChips.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-        }
-
         private static string WhoFor(SessionStats s, BuffTracker.FadeEvent f) => f.Category switch
         {
-            BuffCat.Pet => string.IsNullOrEmpty(s.PetName) ? "pet" : s.PetName,
+            BuffCat.Pet => string.IsNullOrEmpty(s.PetName) ? "your pet" : s.PetName,
             BuffCat.Debuff => string.IsNullOrEmpty(f.Target) ? "target" : f.Target,
             _ => string.IsNullOrEmpty(s.PlayerName) ? "you" : s.PlayerName,
         };
 
-        private static void StartPulse(Border glow)
+        // All transient alerts go through the center-screen CenterFlash. Each source is
+        // gated by a "last seen" timestamp and a freshness window so the historical log
+        // replay on load doesn't flash; live bursts (mass buff cast) are coalesced.
+        private void CheckNotifications(SessionStats s)
         {
-            glow.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation
+            var now = DateTime.Now;
+            _flash ??= new CenterFlash { Owner = this };   // closes with the main window
+
+            // ---- hide / sneak (success + failure) ----
+            for (int i = 0; i < s.StealthEvents.Count; i++)
             {
-                From = 0.08,
-                To = 0.34,
-                Duration = TimeSpan.FromMilliseconds(600),
-                AutoReverse = true,
-                RepeatBehavior = RepeatBehavior.Forever
-            });
+                var ev = s.StealthEvents[i];
+                if (ev.Time <= _lastStealthTime) continue;
+                _lastStealthTime = ev.Time;
+                if ((now - ev.Time).TotalSeconds > FreshSec) continue;
+                switch (ev.Kind)
+                {
+                    case StealthKind.Hide:      _flash!.Flash("", "HIDDEN", "hide successful", FlHide); break;
+                    case StealthKind.Sneak:     _flash!.Flash("", "SNEAKING", "sneak successful", FlSneak); break;
+                    case StealthKind.HideFail:  _flash!.Flash("⚠", "HIDE FAILED", "you are exposed", FlFail); break;
+                    case StealthKind.SneakFail: _flash!.Flash("⚠", "SNEAK FAILED", "you are making noise", FlFail); break;
+                }
+            }
+
+            // ---- buff gained (coalesce a mass cast into one flash) ----
+            var gains = FreshSince(s.Buffs.Gains, ref _lastGainTime, now);
+            if (gains.Count == 1) _flash!.Flash("", gains[0].Name, "buff gained", FlGain);
+            else if (gains.Count > 1) _flash!.Flash("✦", gains.Count + " buffs", "gained", FlGain);
+
+            // ---- buff / debuff faded ----
+            var fades = FreshSince(s.Buffs.Fades, ref _lastFadeTime, now);
+            if (fades.Count > 2) _flash!.Flash("", fades.Count + " buffs", "faded", FlFade);
+            else foreach (var f in fades)
+                {
+                    if (f.Category == BuffCat.Debuff) _flash!.Flash("", f.Name, "wore off " + WhoFor(s, f), FlDebuff);
+                    else _flash!.Flash("", f.Name, "faded from " + WhoFor(s, f), FlFade);
+                }
+
+            // ---- notable skill procs (backstab; more added as class log text is learned) ----
+            var fresh = new List<SkillProc>();
+            for (int i = 0; i < s.SkillProcs.Count; i++)
+            {
+                var sp = s.SkillProcs[i];
+                if (sp.Time <= _lastSkillTime) continue;
+                _lastSkillTime = sp.Time;
+                if ((now - sp.Time).TotalSeconds <= FreshSec) fresh.Add(sp);
+            }
+            for (int i = 0; i < fresh.Count;)
+            {
+                var p = fresh[i];
+                if (p.Miss)
+                {
+                    if ((now - _lastMissFlash).TotalSeconds >= MissFlashGapSec)   // throttle miss spam
+                    {
+                        _lastMissFlash = now;
+                        _flash!.Flash("✕", "MISS", p.Skill.ToUpperInvariant(), FlSkillMiss, holdMs: 850);
+                    }
+                    i++;
+                    continue;
+                }
+                // merge consecutive same-skill hits within 1.5s — a double/multi attack off one activation
+                long total = p.Damage; bool crit = p.Crit; int hits = 1; var last = p; int j = i + 1;
+                while (j < fresh.Count && !fresh[j].Miss
+                       && string.Equals(fresh[j].Skill, p.Skill, StringComparison.OrdinalIgnoreCase)
+                       && (fresh[j].Time - last.Time).TotalSeconds <= 1.5)
+                {
+                    total += fresh[j].Damage; crit |= fresh[j].Crit; hits++; last = fresh[j]; j++;
+                }
+                string name = p.Skill.ToUpperInvariant();
+                string label = hits == 1 ? name : hits == 2 ? "DOUBLE " + name : hits + "× " + name;
+                if (crit)
+                    _flash!.Flash("✦", total.ToString(), label + " — CRITICAL!", FlSkillCrit, holdMs: 1600);
+                else
+                    _flash!.Flash(hits > 1 ? "⚔⚔" : "⚔", total.ToString(), label, FlSkill, holdMs: hits > 1 ? 1400 : 1100);
+                i = j;
+            }
+
+            // ---- AoE melee (cleave / round kick): a burst of same-actor+skill hits on 2+ targets = the ability firing ----
+            for (int i = 0; i < s.CleaveHits.Count; i++)
+            {
+                var ch = s.CleaveHits[i];
+                if (ch.Time <= _lastCleaveTime) continue;
+                _lastCleaveTime = ch.Time;
+                if ((now - ch.Time).TotalSeconds > FreshSec) continue;
+                // start a fresh burst if the actor OR skill changed, or there's a >1.5s gap (new activation)
+                if (_cleaveBurst.Count > 0 &&
+                    (!string.Equals(_cleaveBurst[_cleaveBurst.Count - 1].Actor, ch.Actor, StringComparison.OrdinalIgnoreCase)
+                     || !string.Equals(_cleaveBurst[_cleaveBurst.Count - 1].Skill, ch.Skill, StringComparison.OrdinalIgnoreCase)
+                     || (ch.Time - _cleaveBurst[_cleaveBurst.Count - 1].Time).TotalSeconds > 1.5))
+                    FinalizeCleave(s);
+                _cleaveBurst.Add(ch);
+                _cleaveBurstWall = now;
+            }
+            if (_cleaveBurst.Count > 0 && (now - _cleaveBurstWall).TotalSeconds >= 1.0) FinalizeCleave(s);   // settle
+
+            // ---- Mend (monk self-heal; no amount in the log, just confirm it fired) ----
+            for (int i = 0; i < s.MendEvents.Count; i++)
+            {
+                var mt = s.MendEvents[i];
+                if (mt <= _lastMendTime) continue;
+                _lastMendTime = mt;
+                if ((now - mt).TotalSeconds > FreshSec) continue;
+                _flash!.Flash("✚", "MEND", "wounds mended", FlMend, holdMs: 1200);
+            }
+
+            // ---- Quick Buff ready (timed off the activation line; no "ready" log exists) ----
+            if (s.QuickBuffCastAt is DateTime qb)
+            {
+                var ready = qb.AddSeconds(SessionStats.QuickBuffCooldownSec);
+                if (_qbNotifiedFor != qb && now >= ready && (now - ready).TotalSeconds < 20)
+                {
+                    _qbNotifiedFor = qb;
+                    _flash!.Flash("✦", "QUICK BUFF READY", "cooldown up — recast", FlQuickBuff, holdMs: 1500);
+                }
+            }
         }
 
-        private Border MakeTrayChip(TrayItem item)
+        // Events newer than 'last' (advancing it to the newest seen), returning only the
+        // fresh ones — so historical lines advance the cursor without triggering a flash.
+        private static List<BuffTracker.FadeEvent> FreshSince(List<BuffTracker.FadeEvent> list, ref DateTime last, DateTime now)
         {
-            Brush accent = item.Faded ? FadedBrush : GainBrush;
-            // a gain glows softly then fades out; a fade pulses red for attention
-            var glow = new Border { CornerRadius = new CornerRadius(7), Background = accent, Opacity = 0.1 };
-            if (item.Faded) StartPulse(glow);
-
-            var title = new TextBlock { Text = item.Spell, Foreground = accent, FontSize = 12.5, FontWeight = FontWeights.Bold };
-            var detail = new TextBlock { Text = item.Faded ? "  fades from " + item.Who : "  gained", Foreground = Text, FontSize = 12, VerticalAlignment = VerticalAlignment.Bottom };
-            var sub = new TextBlock { Foreground = Dim, FontSize = 9.5, Margin = new Thickness(0, 1, 0, 0) };
-
-            var line1 = new StackPanel { Orientation = Orientation.Horizontal };
-            line1.Children.Add(title);
-            line1.Children.Add(detail);
-            var col = new StackPanel();
-            col.Children.Add(line1);
-            col.Children.Add(sub);
-
-            var content = new Grid();
-            content.Children.Add(glow);
-            content.Children.Add(col);
-
-            return new Border
+            var fresh = new List<BuffTracker.FadeEvent>();
+            var newest = last;
+            foreach (var e in list)
             {
-                Margin = new Thickness(0, 0, 0, 5), Padding = new Thickness(10, 7, 11, 7), CornerRadius = new CornerRadius(8),
-                Background = RowBg, BorderBrush = Tint(accent, item.Faded ? 0.45 : 0.30), BorderThickness = new Thickness(1),
-                Child = content,
-                Tag = new TrayRefs { Glow = glow, Title = title, Detail = detail, Sub = sub, Faded = item.Faded }
-            };
+                if (e.Time <= last) continue;
+                if (e.Time > newest) newest = e.Time;
+                if ((now - e.Time).TotalSeconds <= FreshSec) fresh.Add(e);
+            }
+            last = newest;
+            return fresh;
         }
 
-        private void UpdateTrayChip(Border chip, TrayItem item)
+        // Flush the pending burst (one activation of cleave / kick / strike). Folds in double/triple
+        // attacks (multiple hits on one target) and multi-target splashes (hits on 2+ targets).
+        private void FinalizeCleave(SessionStats s)
         {
-            if (chip.Tag is not TrayRefs r) return;
-            if (item.Faded && !r.Faded)   // active chip -> red faded pulse
+            if (_cleaveBurst.Count == 0) return;
+            var targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            long total = 0; bool crit = false; int hits = _cleaveBurst.Count; var first = _cleaveBurst[0];
+            foreach (var h in _cleaveBurst)
             {
-                r.Faded = true;
-                r.Title.Foreground = FadedBrush;
-                r.Detail.Text = "  fades from " + item.Who;
-                chip.BorderBrush = Tint(FadedBrush, 0.45);
-                r.Glow.Background = FadedBrush;
-                StartPulse(r.Glow);
+                if (!string.IsNullOrEmpty(h.Target)) targets.Add(h.Target);
+                total += h.Damage; crit |= h.Crit;
             }
-            if (item.Faded)
-            {
-                r.Sub.Text = item.Age < 2 ? "just now" : $"{item.Age:0}s ago";
-                chip.Opacity = item.Age > FadeLingerSec - 4 ? Clamp((FadeLingerSec - item.Age) / 4.0, 0.12, 1.0) : 1.0;
-            }
-            else
-            {
-                r.Sub.Text = "on " + item.Who;
-                chip.Opacity = item.Age > GainLingerSec - 2 ? Clamp((GainLingerSec - item.Age) / 2.0, 0.12, 1.0) : 1.0;
-            }
+            _cleaveBurst.Clear();
+            int nt = targets.Count;
+
+            bool aoeOnly = string.Equals(first.Skill, "Cleave", StringComparison.OrdinalIgnoreCase);
+            if (aoeOnly && nt < 2) return;   // a lone cleave is just the pet's normal swing — stay silent
+
+            // base name: a multi-target kick is definitively a round kick; cleave stays cleave; else the verb
+            string baseName = string.Equals(first.Skill, "Kick", StringComparison.OrdinalIgnoreCase)
+                ? (nt >= 2 ? "ROUND KICK" : "KICK")
+                : first.Skill.ToUpperInvariant();
+
+            // double/triple only makes sense on a single target; multi-target shows the target count instead
+            string prefix = nt == 1 ? (hits == 2 ? "DOUBLE " : hits == 3 ? "TRIPLE " : hits > 3 ? hits + "× " : "") : "";
+            string tgtSuffix = nt >= 2 ? $" — {nt} targets" : "";
+            string sub = (s.IsPlayerToken(first.Actor) ? "" : "PET ") + prefix + baseName + tgtSuffix + (crit ? " — CRIT!" : "");
+
+            Color color = crit ? FlSkillCrit : nt >= 2 ? FlCleave : FlSkill;   // gold crit / orange AoE / teal single
+            string icon = crit ? "✦" : nt >= 2 ? "✷" : "⚔";
+            _flash!.Flash(icon, total.ToString(), sub, color, holdMs: (crit || nt >= 2) ? 1500 : 1100);
         }
 
         private void BuildBiggest(SessionStats s)
@@ -752,6 +845,78 @@ namespace EqlMetrics
         }
 
         private void BtnReset_Click(object sender, RoutedEventArgs e) { lock (_lock) { _stats.Reset(); } _selEncStart = null; }
+
+        // ================= spell-data update =================
+        private CancellationTokenSource? _spellCts;
+        private bool _updatingSpells;
+        private DispatcherTimer? _toastTimer;
+
+        private async void BtnUpdateSpells_Click(object sender, RoutedEventArgs e)
+        {
+            if (_updatingSpells) { try { _spellCts?.Cancel(); } catch { } return; }   // second click cancels
+            _updatingSpells = true;
+            _spellCts = new CancellationTokenSource();
+            _toastTimer?.Stop();
+            BtnUpdateSpells.Foreground = AccentGold;
+
+            ShowToast("⬇", "Contacting the wiki…", AccentGold);
+            ToastBar.Visibility = Visibility.Visible;
+            ToastBar.IsIndeterminate = true;
+
+            var progress = new Progress<ScrapeProgress>(p =>
+            {
+                if (p.Total > 0)
+                {
+                    ToastBar.IsIndeterminate = false;
+                    ToastBar.Maximum = p.Total;
+                    ToastBar.Value = p.Done;
+                    ToastText.Text = $"{p.Phase}  {p.Done}/{p.Total}";
+                }
+                else ToastText.Text = p.Phase;
+            });
+
+            try
+            {
+                var rows = await SpellScraper.ScrapeAsync(progress, _spellCts.Token);
+                if (rows.Count == 0) { ShowToastDone("✗", "No spells returned — try again later.", DmgIn); return; }
+
+                await File.WriteAllTextAsync(SpellStore.SpellsPath, SpellScraper.ToJson(rows),
+                    new System.Text.UTF8Encoding(false), _spellCts.Token);
+
+                int self;
+                lock (_lock) { self = SpellCatalog.ApplyRows(rows); }   // apply under the parser lock (no race with tailing)
+                ShowToastDone("✓", $"Updated — {rows.Count} spells, {self} self-buffs", Heal);
+            }
+            catch (OperationCanceledException) { ShowToastDone("✗", "Spell update canceled.", Dim); }
+            catch (Exception ex) { ShowToastDone("✗", "Update failed: " + Short(ex.Message), DmgIn); }
+            finally
+            {
+                _updatingSpells = false;
+                try { _spellCts?.Dispose(); } catch { }
+                _spellCts = null;
+                ToastBar.IsIndeterminate = false;
+                BtnUpdateSpells.Foreground = Dim;
+            }
+        }
+
+        private void ShowToast(string icon, string text, Brush accent)
+        {
+            ToastIcon.Text = icon; ToastIcon.Foreground = accent;
+            ToastText.Text = text;
+            ToastArea.Visibility = Visibility.Visible;
+        }
+
+        private void ShowToastDone(string icon, string text, Brush accent)
+        {
+            ShowToast(icon, text, accent);
+            ToastBar.Visibility = Visibility.Collapsed;
+            _toastTimer?.Stop();
+            _toastTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(6) };
+            _toastTimer.Tick += (_, __) => { _toastTimer!.Stop(); ToastArea.Visibility = Visibility.Collapsed; };
+            _toastTimer.Start();
+        }
+
+        private static string Short(string s) => s.Length > 80 ? s.Substring(0, 80) + "…" : s;
         private void BtnDimDown_Click(object sender, RoutedEventArgs e) => Backdrop.Opacity = Clamp(Backdrop.Opacity - 0.08, 0.12, 0.95);
         private void BtnDimUp_Click(object sender, RoutedEventArgs e) => Backdrop.Opacity = Clamp(Backdrop.Opacity + 0.08, 0.12, 0.95);
         private void BtnExpand_Click(object sender, RoutedEventArgs e) => ApplyExpanded(MaxPanel.Visibility != Visibility.Visible);

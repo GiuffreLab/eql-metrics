@@ -7,22 +7,14 @@ using EqlMetrics.Core;
 namespace EqlMetrics
 {
     /// <summary>
-    /// Loads spells.json (produced by tools/scrape-spells.ps1) from
-    /// %APPDATA%\EqlMetrics\ and, if present, overrides the baked-in self-buff
-    /// table so refreshed wiki data is picked up without a rebuild.
+    /// Loads spells.json (produced by the in-app updater / SpellScraper) from
+    /// %APPDATA%\EqlMetrics\ and, if present, overrides the baked-in self-buff table
+    /// plus all-spell durations so refreshed wiki data is picked up without a rebuild.
     /// </summary>
     public static class SpellStore
     {
-        private sealed class Row
-        {
-            public string spell { get; set; } = "";
-            public double duration_sec { get; set; }
-            public string spell_type { get; set; } = "";
-            public string cast_on_you { get; set; } = "";
-            public string wears_off { get; set; } = "";
-        }
-
-        private static string FilePath =>
+        /// <summary>Full path of the user's spells.json (in %APPDATA%, writable without admin).</summary>
+        public static string SpellsPath =>
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "EqlMetrics", "spells.json");
 
         /// <summary>Returns the number of self-buffs loaded (0 = kept baked-in defaults).</summary>
@@ -30,35 +22,10 @@ namespace EqlMetrics
         {
             try
             {
-                if (!File.Exists(FilePath)) return 0;
-                var rows = JsonSerializer.Deserialize<List<Row>>(File.ReadAllText(FilePath));
+                if (!File.Exists(SpellsPath)) return 0;
+                var rows = JsonSerializer.Deserialize<List<SpellRow>>(File.ReadAllText(SpellsPath));
                 if (rows == null) return 0;
-
-                // authoritative durations for ALL spells (pet buffs, debuffs, self) keyed by name
-                var durs = new List<KeyValuePair<string, double>>();
-                foreach (var r in rows)
-                    if (!string.IsNullOrWhiteSpace(r.spell) && r.duration_sec > 0)
-                        durs.Add(new KeyValuePair<string, double>(r.spell, r.duration_sec));
-                if (durs.Count > 0) BuffData.AddDurations(durs);
-
-                var defs = new List<BuffDef>();
-                foreach (var r in rows)
-                {
-                    // self-buffs: beneficial, with a "you feel..." apply and a wear-off, not a short HoT tick
-                    if (!string.Equals(r.spell_type, "Beneficial", StringComparison.OrdinalIgnoreCase)) continue;
-                    if (string.IsNullOrWhiteSpace(r.cast_on_you) || string.IsNullOrWhiteSpace(r.wears_off)) continue;
-                    // reject scraper artifacts (a mis-captured "| param =" line)
-                    if (r.cast_on_you.TrimStart().StartsWith("|") || r.wears_off.TrimStart().StartsWith("|")) continue;
-                    if (r.duration_sec > 0 && r.duration_sec < 30) continue;   // skip HoT ticks / very short
-                    defs.Add(new BuffDef
-                    {
-                        Spell = r.spell,
-                        Apply = r.cast_on_you.Trim(),
-                        Fade = r.wears_off.Trim(),
-                        DurationSec = r.duration_sec
-                    });
-                }
-                if (defs.Count > 0) { BuffData.Rebuild(defs); return defs.Count; }
+                return SpellCatalog.ApplyRows(rows);   // shared filter/apply (same path as the live updater)
             }
             catch { /* keep baked-in defaults on any error */ }
             return 0;

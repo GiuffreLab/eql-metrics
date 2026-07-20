@@ -6,6 +6,18 @@ using System.Text.RegularExpressions;
 
 namespace EqlMetrics.Core
 {
+    public enum StealthKind { Hide, Sneak, HideFail, SneakFail }
+
+    /// <summary>A hide/sneak skill-check result, for the transient center-screen flash.</summary>
+    public struct StealthEvent { public StealthKind Kind; public DateTime Time; }
+
+    /// <summary>A "notable" skill attempt (e.g. Backstab) by the player — hit, crit, or miss — for the skill-proc flash.</summary>
+    public struct SkillProc { public string Skill; public long Damage; public bool Crit; public bool Miss; public string Target; public DateTime Time; }
+
+    /// <summary>One landed AoE-capable melee hit (Cleave, or Kick=round kick) by the player or pet. A burst
+    /// of these across 2+ targets in the same window is the AoE ability firing (single-target = a normal swing).</summary>
+    public struct CleaveHit { public string Actor; public string Skill; public long Damage; public bool Crit; public string Target; public DateTime Time; }
+
     /// <summary>
     /// Parses an EverQuest log into live combat/session stats plus a rolling
     /// history of encounters (fights). Feed raw lines with Apply().
@@ -31,8 +43,45 @@ namespace EqlMetrics.Core
         public int Kills;
         public int AbilityPoints;
         public readonly List<LootEntry> Loot = new();
+        public readonly List<StealthEvent> StealthEvents = new();   // hide/sneak skill-check results
+        public DateTime? QuickBuffCastAt;                            // last "You activate Quick Buff." (10-min cooldown)
+        public const double QuickBuffCooldownSec = 600;
+
+        public readonly List<SkillProc> SkillProcs = new();         // landed notable skills (backstab, ...)
+        public readonly List<CleaveHit> CleaveHits = new();         // player/pet AoE-melee hits (grouped into AoE flashes)
+        public readonly List<DateTime> MendEvents = new();          // monk Mend self-heals (log gives no amount)
+        // skills that get their own proc flash; add class skills here as their log text is learned
+        private static readonly HashSet<string> NotableSkills = new(StringComparer.OrdinalIgnoreCase) { "Backstab" };
+        // melee verbs whose hits we collect into per-activation "burst" flashes. Cleave is AoE-only
+        // (single = normal swing, silent); Kick/Strike are monk specials shown every activation. The UI
+        // (FinalizeCleave) decides which, and folds in double/triple attacks and multi-target splashes.
+        private static readonly HashSet<string> BurstSkills = new(StringComparer.OrdinalIgnoreCase) { "Cleave", "Kick", "Strike" };
 
         private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
+
+        public void RecordStealth(StealthKind kind, DateTime dt)
+        {
+            StealthEvents.Add(new StealthEvent { Kind = kind, Time = dt });
+            if (StealthEvents.Count > 50) StealthEvents.RemoveAt(0);
+        }
+
+        public void RecordSkillProc(string skill, long dmg, bool crit, string target, DateTime dt, bool miss = false)
+        {
+            SkillProcs.Add(new SkillProc { Skill = skill, Damage = dmg, Crit = crit, Miss = miss, Target = target ?? "", Time = dt });
+            if (SkillProcs.Count > 50) SkillProcs.RemoveAt(0);
+        }
+
+        public void RecordCleaveHit(string actor, string skill, long dmg, bool crit, string target, DateTime dt)
+        {
+            CleaveHits.Add(new CleaveHit { Actor = actor, Skill = skill, Damage = dmg, Crit = crit, Target = target ?? "", Time = dt });
+            if (CleaveHits.Count > 100) CleaveHits.RemoveAt(0);
+        }
+
+        public void RecordMend(DateTime dt)
+        {
+            MendEvents.Add(dt);
+            if (MendEvents.Count > 50) MendEvents.RemoveAt(0);
+        }
 
         public SessionStats() { Session = new CombatAggregate(this); }
 
@@ -51,7 +100,8 @@ namespace EqlMetrics.Core
             ["bash"]="Bash", ["kick"]="Kick", ["backstab"]="Backstab", ["bite"]="Bite",
             ["claw"]="Claw", ["gore"]="Gore", ["sting"]="Sting", ["smash"]="Crushing",
             ["slam"]="Slam", ["punch"]="Hand to Hand", ["maul"]="Maul", ["rend"]="Rend",
-            ["slice"]="Slashing", ["cleave"]="Cleave", ["chomp"]="Chomp", ["frenzies on"]="Frenzy"
+            ["slice"]="Slashing", ["cleave"]="Cleave", ["chomp"]="Chomp", ["frenzies on"]="Frenzy",
+            ["strike"]="Strike"   // monk Tiger Claw / Eagle Strike / Dragon Punch all log as "strike"
         };
         private static readonly string VerbAlt = BuildVerbAlt();
         private static string BuildVerbAlt()
@@ -102,6 +152,11 @@ namespace EqlMetrics.Core
             TotalPlat = 0; MoteCount = 0; MotesByTier.Clear();
             TotalXpPct = 0; Kills = 0; AbilityPoints = 0;
             Loot.Clear();
+            StealthEvents.Clear();
+            SkillProcs.Clear();
+            CleaveHits.Clear();
+            MendEvents.Clear();
+            QuickBuffCastAt = null;
         }
 
         public static bool TryParseTime(string ts, out DateTime dt)
@@ -185,6 +240,18 @@ namespace EqlMetrics.Core
 
             Session.MarkTime(dt);   // session clock spans all lines
 
+            // ---- stealth skill checks (hide / sneak, success + failure) ----
+            if (msg == "You have hidden yourself from view.") { RecordStealth(StealthKind.Hide, dt); return true; }
+            if (msg == "You are as quiet as a cat stalking its prey.") { RecordStealth(StealthKind.Sneak, dt); return true; }
+            if (msg == "You failed to hide yourself.") { RecordStealth(StealthKind.HideFail, dt); return true; }
+            if (msg == "You are as quiet as a herd of running elephants.") { RecordStealth(StealthKind.SneakFail, dt); return true; }
+
+            // ---- Quick Buff activation (no "ready" line exists, so we time the 10-min cooldown ourselves) ----
+            if (msg == "You activate Quick Buff.") { QuickBuffCastAt = dt; return true; }
+
+            // ---- Mend (monk self-heal; the log gives no amount, just that it fired) ----
+            if (msg == "You mend your wounds and heal some damage.") { RecordMend(dt); return true; }
+
             // ---- melee ----
             var mm = RxMelee.Match(msg);
             if (mm.Success)
@@ -196,12 +263,21 @@ namespace EqlMetrics.Core
                 if (IsPlayerToken(t)) RouteIncomingMe(d, a, skill, DamageKind.Melee, dt);
                 else if (IsPetToken(t)) RouteIncomingPet(d, a, skill, DamageKind.Melee, dt);
                 else RouteOutgoing(a, skill, DamageKind.Melee, d, crit, t, dt);
+                if (IsPlayerToken(a) && NotableSkills.Contains(skill)) RecordSkillProc(skill, d, crit, t, dt);
+                // cleave / kick / strike hits by you or your pet feed the per-activation burst flash (grouped in the UI)
+                if (BurstSkills.Contains(skill) && (IsPlayerToken(a) || IsPetToken(a))) RecordCleaveHit(a, skill, d, crit, t, dt);
                 return true;
             }
 
             // ---- misses ----
             var my = RxMissYou.Match(msg);
-            if (my.Success) { RouteMiss("You", SkillFor(my.Groups["verb"].Value)); return true; }
+            if (my.Success)
+            {
+                string mskill = SkillFor(my.Groups["verb"].Value);
+                RouteMiss("You", mskill);
+                if (NotableSkills.Contains(mskill)) RecordSkillProc(mskill, 0, false, my.Groups["t"].Value, dt, miss: true);
+                return true;
+            }
             var mt = RxMissThird.Match(msg);
             if (mt.Success)
             {
