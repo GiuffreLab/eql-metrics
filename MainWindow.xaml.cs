@@ -31,8 +31,8 @@ namespace EqlMetrics
         private Dictionary<string, double> _buffDur = new(StringComparer.OrdinalIgnoreCase);
         private Dictionary<string, BuffCat> _buffCat = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, Border> _fadeChips = new();
-        private const double FadeLingerSec = 18;   // how long a "faded" alert lingers
-        private const double WarnSec = 8;          // remaining time at which we warn "about to fade"
+        private const double FadeLingerSec = 18;   // how long a "faded" notice lingers
+        private const double GainLingerSec = 6;    // how long a "gained" notice lingers
 
         // ---- palette ----
         private static SolidColorBrush B(string hex)
@@ -47,8 +47,9 @@ namespace EqlMetrics
         private static readonly Brush Grp = B("#57D6A6"), GrpT = B("#B6F0D8");
         private static readonly Brush Nuke = B("#FF9F5A"), Dot = B("#C98BFF"), Melee = B("#5AD6C4");
         private static readonly Brush Gold = B("#F4C85B"), Mote = B("#8BE0FF"), Heal = B("#57D6A6"), Xp = B("#C9A6FF"), DmgIn = B("#FF7A7A");
-        private static readonly Brush RowBg = B("#0DFFFFFF"), RowStroke = B("#22A0C0FF"), RowStrokeSel = B("#66A0C0FF");
-        private static readonly Brush TabSel = B("#265AA9FF");
+        private static readonly Brush RowBg = B("#0DFFFFFF"), RowStroke = B("#2A313B"), RowStrokeSel = B("#66C9A24B");
+        private static readonly Brush TabSel = B("#2AC9A24B");
+        private static readonly Brush AccentGold = B("#C9A24B");   // subtle default_modern chrome accent
 
         public MainWindow()
         {
@@ -194,31 +195,25 @@ namespace EqlMetrics
             CoreRates.Children.Add(Chip("XP/HR", s.XpPerHour.ToString("0.0") + "%", "", Xp));
         }
 
-        private sealed class TrayItem { public string Spell = ""; public BuffCat Cat; public string Who = ""; public bool Faded; public double Value; }
+        private sealed class TrayItem { public string Spell = ""; public BuffCat Cat; public string Who = ""; public bool Faded; public double Age; }
         private sealed class TrayRefs { public Border Glow = null!; public TextBlock Title = null!, Detail = null!, Sub = null!; public bool Faded; }
 
-        private static readonly Brush WarnBrush = B("#F4C85B");   // amber: about to fade
         private static readonly Brush FadedBrush = B("#FF7A7A");  // red: faded
+        private static readonly Brush GainBrush = B("#57D6A6");   // green: landed
 
-        // A bottom tray that expands from the window: amber warnings when a buff is
-        // about to fade (using learned timers), morphing to a red pulse once it drops.
-        // Chips are managed incrementally so the pulse animation stays smooth.
+        // A bottom tray that expands from the window only when something changes: a brief
+        // green "<spell> gained" when a buff lands, and a red pulse "<spell> fades from
+        // <who>" when one wears off. Both linger a few seconds then clear — no standing
+        // list (the game's own buff bar already shows what's currently up).
         private void BuildFades(SessionStats s)
         {
             var now = DateTime.Now;
             var items = new Dictionary<string, TrayItem>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var b in s.Buffs.Active(now))   // warnings: known-duration buffs near expiry
-            {
-                var rem = b.Remaining(now);
-                if (rem.HasValue && rem.Value > 0 && rem.Value <= WarnSec)
-                    items[b.Name] = new TrayItem { Spell = b.Name, Cat = b.Category, Who = WhoActive(s, b), Faded = false, Value = rem.Value };
-            }
-            foreach (var f in s.Buffs.RecentFades(now, FadeLingerSec))   // fades override warnings for same spell
-            {
-                double age = (now - f.Time).TotalSeconds;
-                items[f.Name] = new TrayItem { Spell = f.Name, Cat = f.Category, Who = WhoFor(s, f), Faded = true, Value = age };
-            }
+            foreach (var g in s.Buffs.RecentGains(now, GainLingerSec))   // brief "landed" notices
+                items[g.Name] = new TrayItem { Spell = g.Name, Cat = g.Category, Who = WhoFor(s, g), Faded = false, Age = (now - g.Time).TotalSeconds };
+            foreach (var f in s.Buffs.RecentFades(now, FadeLingerSec))   // a fade replaces the gain notice
+                items[f.Name] = new TrayItem { Spell = f.Name, Cat = f.Category, Who = WhoFor(s, f), Faded = true, Age = (now - f.Time).TotalSeconds };
 
             foreach (var kv in items)
             {
@@ -228,7 +223,7 @@ namespace EqlMetrics
                     _fadeChips[kv.Key] = chip;
                     FadePanel.Children.Insert(0, chip);
                 }
-                UpdateTrayChip(chip, kv.Value, now);
+                UpdateTrayChip(chip, kv.Value);
             }
             foreach (var key in _fadeChips.Keys.ToList())
                 if (!items.ContainsKey(key)) { FadePanel.Children.Remove(_fadeChips[key]); _fadeChips.Remove(key); }
@@ -242,20 +237,14 @@ namespace EqlMetrics
             BuffCat.Debuff => string.IsNullOrEmpty(f.Target) ? "target" : f.Target,
             _ => string.IsNullOrEmpty(s.PlayerName) ? "you" : s.PlayerName,
         };
-        private static string WhoActive(SessionStats s, BuffTracker.Buff b) => b.Category switch
-        {
-            BuffCat.Pet => string.IsNullOrEmpty(s.PetName) ? "pet" : s.PetName,
-            BuffCat.Debuff => string.IsNullOrEmpty(b.Target) ? "target" : b.Target,
-            _ => string.IsNullOrEmpty(s.PlayerName) ? "you" : s.PlayerName,
-        };
 
-        private static void StartPulse(Border glow, bool faded)
+        private static void StartPulse(Border glow)
         {
             glow.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation
             {
-                From = 0.06,
-                To = faded ? 0.34 : 0.22,
-                Duration = TimeSpan.FromMilliseconds(faded ? 600 : 900),
+                From = 0.08,
+                To = 0.34,
+                Duration = TimeSpan.FromMilliseconds(600),
                 AutoReverse = true,
                 RepeatBehavior = RepeatBehavior.Forever
             });
@@ -263,12 +252,13 @@ namespace EqlMetrics
 
         private Border MakeTrayChip(TrayItem item)
         {
-            Brush accent = item.Faded ? FadedBrush : WarnBrush;
+            Brush accent = item.Faded ? FadedBrush : GainBrush;
+            // a gain glows softly then fades out; a fade pulses red for attention
             var glow = new Border { CornerRadius = new CornerRadius(7), Background = accent, Opacity = 0.1 };
-            StartPulse(glow, item.Faded);
+            if (item.Faded) StartPulse(glow);
 
             var title = new TextBlock { Text = item.Spell, Foreground = accent, FontSize = 12.5, FontWeight = FontWeights.Bold };
-            var detail = new TextBlock { Text = (item.Faded ? "  faded from " : "  fading from ") + item.Who, Foreground = Text, FontSize = 12, VerticalAlignment = VerticalAlignment.Bottom };
+            var detail = new TextBlock { Text = item.Faded ? "  fades from " + item.Who : "  gained", Foreground = Text, FontSize = 12, VerticalAlignment = VerticalAlignment.Bottom };
             var sub = new TextBlock { Foreground = Dim, FontSize = 9.5, Margin = new Thickness(0, 1, 0, 0) };
 
             var line1 = new StackPanel { Orientation = Orientation.Horizontal };
@@ -285,33 +275,33 @@ namespace EqlMetrics
             return new Border
             {
                 Margin = new Thickness(0, 0, 0, 5), Padding = new Thickness(10, 7, 11, 7), CornerRadius = new CornerRadius(8),
-                Background = RowBg, BorderBrush = Tint(accent, 0.45), BorderThickness = new Thickness(1),
+                Background = RowBg, BorderBrush = Tint(accent, item.Faded ? 0.45 : 0.30), BorderThickness = new Thickness(1),
                 Child = content,
                 Tag = new TrayRefs { Glow = glow, Title = title, Detail = detail, Sub = sub, Faded = item.Faded }
             };
         }
 
-        private void UpdateTrayChip(Border chip, TrayItem item, DateTime now)
+        private void UpdateTrayChip(Border chip, TrayItem item)
         {
             if (chip.Tag is not TrayRefs r) return;
-            if (item.Faded && !r.Faded)   // transition amber warning -> red faded pulse
+            if (item.Faded && !r.Faded)   // active chip -> red faded pulse
             {
                 r.Faded = true;
                 r.Title.Foreground = FadedBrush;
-                r.Detail.Text = "  faded from " + item.Who;
+                r.Detail.Text = "  fades from " + item.Who;
                 chip.BorderBrush = Tint(FadedBrush, 0.45);
                 r.Glow.Background = FadedBrush;
-                StartPulse(r.Glow, true);
+                StartPulse(r.Glow);
             }
             if (item.Faded)
             {
-                r.Sub.Text = $"{item.Value:0}s ago";
-                chip.Opacity = item.Value > FadeLingerSec - 4 ? Clamp((FadeLingerSec - item.Value) / 4.0, 0.12, 1.0) : 1.0;
+                r.Sub.Text = item.Age < 2 ? "just now" : $"{item.Age:0}s ago";
+                chip.Opacity = item.Age > FadeLingerSec - 4 ? Clamp((FadeLingerSec - item.Age) / 4.0, 0.12, 1.0) : 1.0;
             }
             else
             {
-                r.Sub.Text = $"{item.Value:0}s left";
-                chip.Opacity = 1.0;
+                r.Sub.Text = "on " + item.Who;
+                chip.Opacity = item.Age > GainLingerSec - 2 ? Clamp((GainLingerSec - item.Age) / 2.0, 0.12, 1.0) : 1.0;
             }
         }
 
@@ -622,7 +612,7 @@ namespace EqlMetrics
         private FrameworkElement SectionHeader(string t)
         {
             var dp = new DockPanel { Margin = new Thickness(0, 10, 0, 6) };
-            dp.Children.Add(new TextBlock { Text = t, Foreground = B("#7C8AA0"), FontSize = 10, FontWeight = FontWeights.Bold });
+            dp.Children.Add(new TextBlock { Text = t, Foreground = B("#8B8D92"), FontSize = 10, FontWeight = FontWeights.Bold });
             return dp;
         }
 
@@ -802,7 +792,7 @@ namespace EqlMetrics
             if (on) ex |= WS_EX_TRANSPARENT | WS_EX_LAYERED;
             else ex &= ~WS_EX_TRANSPARENT;
             SetWindowLong(hwnd, GWL_EXSTYLE, ex);
-            BtnClickThru.Foreground = on ? You : Dim;
+            BtnClickThru.Foreground = on ? AccentGold : Dim;
             TitleBar.Opacity = on ? 0.55 : 1.0;
         }
 

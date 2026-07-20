@@ -41,10 +41,27 @@ namespace EqlMetrics.Core
             new BuffDef { Spell = "Shield of Thistles",     Apply = "You are surrounded by a thorny barrier.",             Fade = "The brambles fall away.",           DurationSec = 54 },
         };
 
-        public static readonly Dictionary<string, BuffDef> ByApply = new(StringComparer.OrdinalIgnoreCase);
+        // one apply/fade line may map to several spells (e.g. Quickness & Alacrity share text)
+        public static readonly Dictionary<string, List<BuffDef>> ByApply = new(StringComparer.OrdinalIgnoreCase);
         public static readonly Dictionary<string, List<string>> FadeToSpells = new(StringComparer.OrdinalIgnoreCase);
+        // authoritative spell -> duration (seconds), base-name keyed, for ALL spells (pet/debuff too)
+        public static readonly Dictionary<string, double> DurationBySpell = new(StringComparer.OrdinalIgnoreCase);
 
-        static BuffData() => Rebuild(Buffs);
+        static BuffData()
+        {
+            Rebuild(Buffs);
+            foreach (var b in Buffs) if (b.DurationSec > 0) DurationBySpell[BuffTracker.BaseName(b.Spell)] = b.DurationSec;
+        }
+
+        /// <summary>Merge authoritative durations (from spells.json, all spells) keyed by base name.</summary>
+        public static void AddDurations(IEnumerable<KeyValuePair<string, double>> pairs)
+        {
+            foreach (var kv in pairs)
+                if (kv.Value > 0) DurationBySpell[BuffTracker.BaseName(kv.Key)] = kv.Value;
+        }
+
+        public static double? DurationFor(string spell) =>
+            DurationBySpell.TryGetValue(BuffTracker.BaseName(spell), out var d) ? d : (double?)null;
 
         /// <summary>Replace the active self-buff table (e.g. from a scraped spells.json).</summary>
         public static void Rebuild(IEnumerable<BuffDef> defs)
@@ -54,7 +71,8 @@ namespace EqlMetrics.Core
             foreach (var b in defs)
             {
                 if (string.IsNullOrEmpty(b.Apply)) continue;
-                ByApply[b.Apply] = b;
+                if (!ByApply.TryGetValue(b.Apply, out var al)) { al = new List<BuffDef>(); ByApply[b.Apply] = al; }
+                if (!al.Exists(x => x.Spell.Equals(b.Spell, StringComparison.OrdinalIgnoreCase))) al.Add(b);
                 if (b.Fade.Length > 0)
                 {
                     if (!FadeToSpells.TryGetValue(b.Fade, out var list)) { list = new List<string>(); FadeToSpells[b.Fade] = list; }

@@ -34,12 +34,21 @@ namespace EqlMetrics
                 var rows = JsonSerializer.Deserialize<List<Row>>(File.ReadAllText(FilePath));
                 if (rows == null) return 0;
 
+                // authoritative durations for ALL spells (pet buffs, debuffs, self) keyed by name
+                var durs = new List<KeyValuePair<string, double>>();
+                foreach (var r in rows)
+                    if (!string.IsNullOrWhiteSpace(r.spell) && r.duration_sec > 0)
+                        durs.Add(new KeyValuePair<string, double>(r.spell, r.duration_sec));
+                if (durs.Count > 0) BuffData.AddDurations(durs);
+
                 var defs = new List<BuffDef>();
                 foreach (var r in rows)
                 {
                     // self-buffs: beneficial, with a "you feel..." apply and a wear-off, not a short HoT tick
                     if (!string.Equals(r.spell_type, "Beneficial", StringComparison.OrdinalIgnoreCase)) continue;
                     if (string.IsNullOrWhiteSpace(r.cast_on_you) || string.IsNullOrWhiteSpace(r.wears_off)) continue;
+                    // reject scraper artifacts (a mis-captured "| param =" line)
+                    if (r.cast_on_you.TrimStart().StartsWith("|") || r.wears_off.TrimStart().StartsWith("|")) continue;
                     if (r.duration_sec > 0 && r.duration_sec < 30) continue;   // skip HoT ticks / very short
                     defs.Add(new BuffDef
                     {

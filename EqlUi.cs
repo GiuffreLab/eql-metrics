@@ -23,7 +23,7 @@ namespace EqlMetrics
         public static readonly Brush Grp = B("#57D6A6"), GrpT = B("#B6F0D8");
         public static readonly Brush Nuke = B("#FF9F5A"), Dot = B("#C98BFF"), Melee = B("#5AD6C4");
         public static readonly Brush Gold = B("#F4C85B"), Mote = B("#8BE0FF"), Heal = B("#57D6A6"), Xp = B("#C9A6FF"), DmgIn = B("#FF7A7A");
-        public static readonly Brush RowBg = B("#12FFFFFF"), RowStroke = B("#26A0C0FF");
+        public static readonly Brush RowBg = B("#12FFFFFF"), RowStroke = B("#2A313B");
 
         public static (string, Brush) BadgeFor(DamageKind k) => k switch
         {
@@ -48,7 +48,7 @@ namespace EqlMetrics
 
         public static FrameworkElement Section(string t) => new TextBlock
         {
-            Text = t, Foreground = B("#8FA0BA"), FontSize = 11, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 14, 0, 7)
+            Text = t, Foreground = B("#8B8D92"), FontSize = 11, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 14, 0, 7)
         };
 
         public static FrameworkElement Sub(string t, Brush color) => new TextBlock

@@ -20,7 +20,7 @@ namespace EqlMetrics
             Title = "Encounter — " + e.Title;
             Width = 800; Height = 880; MinWidth = 560; MinHeight = 420;
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
-            Background = EqlUi.B("#0B0F17");
+            Background = EqlUi.B("#0B0D11");
             Foreground = EqlUi.Text;
             ResizeMode = ResizeMode.CanResizeWithGrip;
 

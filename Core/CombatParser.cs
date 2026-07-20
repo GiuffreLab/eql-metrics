@@ -91,6 +91,7 @@ namespace EqlMetrics.Core
         private static readonly Regex RxResist = new(@"^Your target resisted the (?<spell>.+?) spell\.", RegexOptions.Compiled);
         private static readonly Regex RxWornPet = new(@"^Your pet's (?<spell>.+?) spell has worn off\.$", RegexOptions.Compiled);
         private static readonly Regex RxWorn = new(@"^Your (?<spell>.+?) spell has worn off(?: of (?<tgt>.+?))?\.$", RegexOptions.Compiled);
+        private static readonly Regex RxMemorize = new(@"^You have finished memorizing (?<spell>.+?)\.$", RegexOptions.Compiled);
 
         public void Reset()
         {
@@ -271,8 +272,9 @@ namespace EqlMetrics.Core
             }
             var fz = RxFizzle.Match(msg); if (fz.Success) { Buffs.Fail(fz.Groups["spell"].Value.Trim()); return true; }
             var it = RxInterrupt.Match(msg); if (it.Success) { Buffs.Fail(it.Groups["spell"].Value.Trim()); return true; }
-            var fg = RxForget.Match(msg); if (fg.Success) { Buffs.Fail(fg.Groups["spell"].Value.Trim()); return true; }
             var rs = RxResist.Match(msg); if (rs.Success) { Buffs.Fail(rs.Groups["spell"].Value.Trim()); return true; }
+            var mem = RxMemorize.Match(msg); if (mem.Success) { Buffs.Memorize(mem.Groups["spell"].Value.Trim()); return true; }
+            var fg = RxForget.Match(msg); if (fg.Success) { Buffs.Forget(fg.Groups["spell"].Value.Trim()); return true; }
 
             // ---- currency ----
             if (msg.Contains("from the corpse") || msg.Contains("sold it for"))
@@ -314,7 +316,14 @@ namespace EqlMetrics.Core
             if (aa.Success) { AbilityPoints += aa.Groups["n"].Success ? int.Parse(aa.Groups["n"].Value, Inv) : 1; return true; }
 
             // ---- self-buff apply / fade (flavor text, from wiki spell data) ----
-            if (BuffData.ByApply.TryGetValue(msg, out var bdef)) { Buffs.SelfApply(bdef.Spell, bdef.DurationSec, dt); return true; }
+            if (BuffData.ByApply.TryGetValue(msg, out var cands) && cands.Count > 0)
+            {
+                // shared apply lines (e.g. Quickness vs Alacrity) are disambiguated by the
+                // "You begin casting <Spell>" line that just preceded this apply.
+                var def = cands.Count == 1 ? cands[0] : (Buffs.ResolveApply(cands, dt) ?? cands[0]);
+                Buffs.SelfApply(def.Spell, def.DurationSec, dt);
+                return true;
+            }
             if (BuffData.FadeToSpells.TryGetValue(msg, out var fspells))
             {
                 Buffs.SelfFade(Buffs.PickActive(fspells) ?? fspells[0], dt);

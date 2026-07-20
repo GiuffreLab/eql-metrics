@@ -28,8 +28,14 @@ $ErrorActionPreference = "Stop"
 $headers = @{ "User-Agent" = "eql-metrics-spell-scraper/1.0 (personal EQ overlay; contact: local user)" }
 
 function Get-Field([string]$text, [string]$name) {
-  $m = [regex]::Match($text, "(?m)^\s*\|\s*$([regex]::Escape($name))\s*=\s*(.*?)\s*$")
-  if ($m.Success) { return $m.Groups[1].Value.Trim() }
+  # NB: use [ \t]* (not \s*) around the value so an EMPTY field doesn't let the
+  # matcher cross the newline and capture the next "| param =" line.
+  $m = [regex]::Match($text, "(?m)^[ \t]*\|[ \t]*$([regex]::Escape($name))[ \t]*=[ \t]*(.*?)[ \t]*$")
+  if ($m.Success) {
+    $v = $m.Groups[1].Value.Trim()
+    if ($v.StartsWith('|')) { return "" }   # guard against any stray template artifact
+    return $v
+  }
   return ""
 }
 
@@ -96,5 +102,7 @@ foreach ($t in $titles) {
 # ---- 3. write json ----
 $dir = Split-Path -Parent $OutFile
 if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-$spells | Sort-Object spell | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $OutFile -Encoding UTF8
+# write UTF-8 without BOM so any JSON reader is happy
+$json = ($spells | Sort-Object spell | ConvertTo-Json -Depth 4)
+[System.IO.File]::WriteAllText($OutFile, $json, (New-Object System.Text.UTF8Encoding($false)))
 Write-Host "Wrote $($spells.Count) spells to $OutFile"
