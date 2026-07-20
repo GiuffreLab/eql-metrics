@@ -1,0 +1,66 @@
+using System;
+using System.Collections.Generic;
+
+namespace EqlMetrics.Core
+{
+    public sealed class BuffDef
+    {
+        public string Spell = "";
+        public string Apply = "";   // "cast on you" flavor line
+        public string Fade = "";    // "wears off" flavor line
+        public double DurationSec;  // 0 = unknown / permanent (no countdown)
+    }
+
+    /// <summary>
+    /// Self-buff message + duration table sourced from the EverQuest Legends wiki
+    /// (eqlwiki.com). Self-buffs fade with spell-specific flavor text and no spell
+    /// name, so this table maps that flavor back to the spell + duration.
+    /// Only persistent beneficial self-buffs are listed (not nukes, heals, HoTs,
+    /// debuffs, or utility). Debuffs/pet buffs are handled via "worn off" lines.
+    /// </summary>
+    public static class BuffData
+    {
+        public static readonly BuffDef[] Buffs =
+        {
+            new BuffDef { Spell = "Holy Armor",             Apply = "You feel the favor of the gods upon you.",            Fade = "You no longer feel blessed.",       DurationSec = 1620 },
+            new BuffDef { Spell = "Strengthen",             Apply = "You feel stronger.",                                  Fade = "Your strength fades.",              DurationSec = 1620 },
+            new BuffDef { Spell = "Center",                 Apply = "You feel magnanimous of spirit.",                     Fade = "Your sense of center fades.",       DurationSec = 1620 },
+            new BuffDef { Spell = "Courage",                Apply = "You feel a rush of courage.",                         Fade = "You feel less courageous.",         DurationSec = 1620 },
+            new BuffDef { Spell = "Skin like Wood",         Apply = "Your skin turns hard as wood.",                       Fade = "Your skin returns to normal.",      DurationSec = 1620 },
+            new BuffDef { Spell = "Skin like Rock",         Apply = "Your skin turns hard as stone.",                      Fade = "Your skin returns to normal.",      DurationSec = 1620 },
+            new BuffDef { Spell = "Quickness",              Apply = "You feel much faster.",                               Fade = "Your speed returns to normal.",     DurationSec = 660 },
+            new BuffDef { Spell = "Spirit of Wolf",         Apply = "You feel the spirit of wolf enter you.",              Fade = "The spirit of wolf leaves you.",    DurationSec = 1620 },
+            new BuffDef { Spell = "Lesser Shielding",       Apply = "You feel armored.",                                   Fade = "Your shielding fades.",             DurationSec = 0 },
+            new BuffDef { Spell = "Yaulp",                  Apply = "You feel a surge of strength as you let forth a mighty yaulp.", Fade = "Your surge of strength fades.", DurationSec = 0 },
+            new BuffDef { Spell = "Blessing of Piety",      Apply = "Your thoughts quicken as reverence fills your mind.",  Fade = "Your thoughts slow.",               DurationSec = 2400 },
+            new BuffDef { Spell = "Breeze",                 Apply = "A light breeze slips through your mind.",              Fade = "The light breeze fades.",           DurationSec = 1626 },
+            new BuffDef { Spell = "Intellectual Advancement",Apply = "Your mind sharpens.",                                Fade = "The intellectual advancement fades.",DurationSec = 1620 },
+            new BuffDef { Spell = "See Invisible",          Apply = "Your eyes tingle.",                                   Fade = "Your eyes stop tingling.",          DurationSec = 1620 },
+            new BuffDef { Spell = "Mist",                   Apply = "Your image blurs.",                                   Fade = "You come into focus.",              DurationSec = 1620 },
+            new BuffDef { Spell = "Blessing of the Page",   Apply = "Your hands glow a dull gold.",                        Fade = "The golden glow fades.",            DurationSec = 1800 },
+            new BuffDef { Spell = "Shield of Thistles",     Apply = "You are surrounded by a thorny barrier.",             Fade = "The brambles fall away.",           DurationSec = 54 },
+        };
+
+        public static readonly Dictionary<string, BuffDef> ByApply = new(StringComparer.OrdinalIgnoreCase);
+        public static readonly Dictionary<string, List<string>> FadeToSpells = new(StringComparer.OrdinalIgnoreCase);
+
+        static BuffData() => Rebuild(Buffs);
+
+        /// <summary>Replace the active self-buff table (e.g. from a scraped spells.json).</summary>
+        public static void Rebuild(IEnumerable<BuffDef> defs)
+        {
+            ByApply.Clear();
+            FadeToSpells.Clear();
+            foreach (var b in defs)
+            {
+                if (string.IsNullOrEmpty(b.Apply)) continue;
+                ByApply[b.Apply] = b;
+                if (b.Fade.Length > 0)
+                {
+                    if (!FadeToSpells.TryGetValue(b.Fade, out var list)) { list = new List<string>(); FadeToSpells[b.Fade] = list; }
+                    if (!list.Contains(b.Spell)) list.Add(b.Spell);
+                }
+            }
+        }
+    }
+}

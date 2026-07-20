@@ -12,10 +12,9 @@
         UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Ideal"
         FontFamily="Segoe UI"
-        Width="330">
+        Width="340">
 
     <Window.Resources>
-        <!-- keep every glyph crisp over any game background -->
         <Style TargetType="TextBlock">
             <Setter Property="Effect">
                 <Setter.Value>
@@ -24,7 +23,6 @@
             </Setter>
         </Style>
 
-        <!-- title-bar icon button -->
         <Style x:Key="IconBtn" TargetType="Button">
             <Setter Property="Width" Value="20"/>
             <Setter Property="Height" Value="20"/>
@@ -61,8 +59,7 @@
         <StackPanel>
 
             <!-- ===== title bar ===== -->
-            <Border x:Name="TitleBar" CornerRadius="12,12,0,0" Padding="9,7"
-                    MouseLeftButtonDown="TitleBar_MouseDown">
+            <Border x:Name="TitleBar" CornerRadius="12,12,0,0" Padding="9,7" MouseLeftButtonDown="TitleBar_MouseDown">
                 <Border.Background>
                     <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
                         <GradientStop Color="#1A5AA9FF" Offset="0"/>
@@ -73,7 +70,6 @@
                     <TextBlock Text="&#9670;" Foreground="#5AA9FF" FontSize="12" VerticalAlignment="Center" Margin="0,0,6,0"/>
                     <TextBlock Text="EQL Metrics" Foreground="#EAF3FF" FontWeight="Bold" FontSize="12" VerticalAlignment="Center"/>
                     <TextBlock x:Name="CharLabel" Text="" Foreground="#8A97AB" FontSize="11" Margin="7,0,0,0" VerticalAlignment="Center"/>
-
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
                         <Button x:Name="BtnPick"      Style="{StaticResource IconBtn}" Content="&#128193;" ToolTip="Pick log file" Click="BtnPick_Click"/>
                         <Button x:Name="BtnReset"     Style="{StaticResource IconBtn}" Content="&#8635;"    ToolTip="Reset session" Click="BtnReset_Click"/>
@@ -86,54 +82,49 @@
                 </DockPanel>
             </Border>
 
-            <!-- ===== summary (always visible) ===== -->
-            <StackPanel Margin="13,10,13,6">
-                <DockPanel Margin="0,0,0,6">
+            <!-- ===== core strip (always visible) ===== -->
+            <StackPanel Margin="13,10,13,4">
+                <DockPanel Margin="0,0,0,5">
                     <TextBlock x:Name="EncounterName" Text="no fight yet" Foreground="#8A97AB" FontSize="11" VerticalAlignment="Center"/>
                     <TextBlock x:Name="EncounterTime" DockPanel.Dock="Right" Text="" Foreground="#8A97AB" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center"/>
                 </DockPanel>
-
                 <StackPanel Orientation="Horizontal">
-                    <TextBlock x:Name="BigDps" Text="0" Foreground="#EAF3FF" FontSize="38" FontWeight="Bold"/>
+                    <TextBlock x:Name="BigDps" Text="0" Foreground="#EAF3FF" FontSize="36" FontWeight="Bold"/>
                     <TextBlock Text="DPS" Foreground="#8A97AB" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Bottom" Margin="7,0,0,7"/>
                     <TextBlock x:Name="DpsSplit" Text="" Foreground="#8A97AB" FontSize="11" VerticalAlignment="Bottom" Margin="10,0,0,8"/>
                 </StackPanel>
-
-                <!-- mini rates -->
-                <UniformGrid x:Name="MiniRates" Columns="4" Margin="0,8,0,0"/>
+                <WrapPanel x:Name="CoreRates" Margin="0,6,0,0"/>
             </StackPanel>
 
-            <!-- ===== detail (collapsible) ===== -->
-            <StackPanel x:Name="DetailPanel" Margin="13,2,13,4">
-
-                <TextBlock Text="PARTY DAMAGE" Foreground="#7C8AA0" FontSize="10" FontWeight="Bold" Margin="0,6,0,6"/>
-                <StackPanel x:Name="CombatantList"/>
-
-                <TextBlock Text="INCOMING / ENEMY" Foreground="#7C8AA0" FontSize="10" FontWeight="Bold" Margin="0,10,0,6"/>
-                <WrapPanel x:Name="EnemyPanel"/>
-
-                <DockPanel Margin="0,10,0,6">
-                    <TextBlock Text="ABILITY BREAKDOWN" Foreground="#7C8AA0" FontSize="10" FontWeight="Bold" VerticalAlignment="Center"/>
-                    <TextBlock x:Name="BreakdownWho" DockPanel.Dock="Right" Text="" Foreground="#5AA9FF" FontSize="10" FontWeight="SemiBold" HorizontalAlignment="Right" VerticalAlignment="Center"/>
-                </DockPanel>
-                <StackPanel x:Name="AbilityList"/>
-
-                <DockPanel x:Name="HealHeader" Margin="0,12,0,6">
-                    <TextBlock Text="HEALING" Foreground="#7C8AA0" FontSize="10" FontWeight="Bold" VerticalAlignment="Center"/>
-                    <TextBlock x:Name="HealSummary" DockPanel.Dock="Right" Text="" Foreground="#57D6A6" FontSize="10" FontWeight="SemiBold" HorizontalAlignment="Right" VerticalAlignment="Center"/>
-                </DockPanel>
-                <StackPanel x:Name="HealList"/>
-
-                <TextBlock Text="SESSION" Foreground="#7C8AA0" FontSize="10" FontWeight="Bold" Margin="0,12,0,6"/>
-                <WrapPanel x:Name="SessionStatsPanel"/>
-
-                <DockPanel Margin="0,12,0,6">
-                    <TextBlock Text="RECENT LOOT" Foreground="#7C8AA0" FontSize="10" FontWeight="Bold" VerticalAlignment="Center"/>
-                    <TextBlock x:Name="LootToggle" DockPanel.Dock="Right" Text="show more &#9662;" Foreground="#5AA9FF" FontSize="10" FontWeight="SemiBold"
-                               HorizontalAlignment="Right" VerticalAlignment="Center" Cursor="Hand" MouseLeftButtonUp="LootToggle_Click"/>
-                </DockPanel>
-                <StackPanel x:Name="LootList"/>
+            <!-- ===== biggest hits (minimized only) ===== -->
+            <StackPanel x:Name="BiggestStrip" Margin="13,2,13,6">
+                <TextBlock Text="BIGGEST HITS" Foreground="#7C8AA0" FontSize="10" FontWeight="Bold" Margin="0,4,0,6"/>
+                <WrapPanel x:Name="BiggestPanel"/>
             </StackPanel>
+
+            <!-- ===== maximized (tabs) ===== -->
+            <StackPanel x:Name="MaxPanel" Margin="13,2,13,4">
+                <StackPanel Orientation="Horizontal" Margin="0,2,0,8">
+                    <Border x:Name="TabOverview"   Tag="Overview"   Padding="10,5" Margin="0,0,4,0" CornerRadius="8" Cursor="Hand" MouseLeftButtonUp="Tab_Click"><TextBlock Text="Overview" Foreground="#E8EEF7" FontSize="11" FontWeight="SemiBold"/></Border>
+                    <Border x:Name="TabBreakdown"  Tag="Breakdown"  Padding="10,5" Margin="0,0,4,0" CornerRadius="8" Cursor="Hand" MouseLeftButtonUp="Tab_Click"><TextBlock Text="Breakdown" Foreground="#8A97AB" FontSize="11" FontWeight="SemiBold"/></Border>
+                    <Border x:Name="TabEncounters" Tag="Encounters" Padding="10,5" Margin="0,0,4,0" CornerRadius="8" Cursor="Hand" MouseLeftButtonUp="Tab_Click"><TextBlock Text="Encounters" Foreground="#8A97AB" FontSize="11" FontWeight="SemiBold"/></Border>
+                    <Border x:Name="TabLoot"       Tag="Loot"       Padding="10,5" CornerRadius="8" Cursor="Hand" MouseLeftButtonUp="Tab_Click"><TextBlock Text="Loot" Foreground="#8A97AB" FontSize="11" FontWeight="SemiBold"/></Border>
+                </StackPanel>
+
+                <StackPanel x:Name="OverviewPanel"/>
+                <StackPanel x:Name="BreakdownPanel"/>
+                <StackPanel x:Name="EncountersPanel"/>
+                <StackPanel x:Name="LootPanel"/>
+            </StackPanel>
+
+            <!-- ===== fade alerts (expands from the bottom) ===== -->
+            <Border x:Name="FadeArea" Visibility="Collapsed" Margin="10,4,10,2" Padding="10,8" CornerRadius="10"
+                    Background="#14FFFFFF" BorderBrush="#40FF9F5A" BorderThickness="1">
+                <StackPanel>
+                    <TextBlock Text="&#9888;  BUFF ALERTS" Foreground="#FF9F5A" FontSize="9.5" FontWeight="Bold" Margin="0,0,0,5"/>
+                    <StackPanel x:Name="FadePanel"/>
+                </StackPanel>
+            </Border>
 
             <!-- ===== footer ===== -->
             <Border Padding="13,7" BorderBrush="#22A0C0FF" BorderThickness="0,1,0,0" CornerRadius="0,0,12,12">
