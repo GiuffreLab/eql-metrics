@@ -82,7 +82,7 @@ up to three at once.
   if you have the SDK.)
 - **EverQuest Legends** running in **Windowed** or **Borderless Windowed** mode — an overlay
   can't draw on top of exclusive fullscreen.
-- **Logging enabled** in-game: type `/log on` once so the client writes `eqlog_<You>_<server>.txt`.
+- **Logging enabled** in-game: type `/log` once so the client writes `eqlog_<You>_<server>.txt`.
 
 ## Install & run
 
@@ -299,28 +299,6 @@ Adding a new class skill is usually a one-liner once you know its log text:
 
 Skills that log with unique phrasing (disciplines, feign death, taunt, etc.) get their own
 detection line in `SessionStats.Apply`, following the existing patterns.
-
-## Project layout
-
-```
-Core/                 UI-agnostic parser (unit-testable)
-  CombatParser.cs     SessionStats: line parsing, encounters, buffs, skills, avoidance
-  CombatAggregate.cs  reusable rollup (session + per-encounter)
-  BuffTracker.cs      active buffs, fade/gain events, learned durations
-  BuffData.cs         self-buff message/duration table (seeded + wiki)
-  SpellCatalog.cs     applies scraped rows to BuffData
-  SpellScraper.cs     in-app EQL-wiki scraper (HttpClient)
-  Settings.cs         persisted user settings
-MainWindow.xaml(.cs)  the overlay: HUD + tabs, notification routing
-StealthFlash.cs       CenterFlash — the rising center-screen notifications
-EncounterWindow.xaml.cs   per-fight detail pop-out
-SettingsWindow.cs     the gear-icon settings window
-SpellStore.cs         loads/refreshes spells.json from %APPDATA%
-EqlUi.cs              shared dark-overlay UI building blocks
-images/               screenshots used by this README
-Run-EqlMetrics.cmd    double-click launcher (visible)
-Run-EqlMetrics.vbs    double-click launcher (silent)
-```
 
 ---
 
