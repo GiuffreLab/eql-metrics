@@ -249,8 +249,9 @@ namespace EqlMetrics.Core
         // Pet auto-detect: a summoned/charmed pet's name changes every resummon, so we learn the current one from
         // the log. EQL pets address you as "Master" ("<pet> told you, 'Attacking <target> Master.'") — frequent —
         // or acknowledge a command ("<pet> says, 'As you wish, oh great one.'"). Either "says," or "told you," is used.
+        // The name may be multi-word/possessive (Beastlord warders log as "<Owner>`s warder", backtick apostrophe).
         private static readonly Regex RxPetChatter = new(
-            @"^(?<pet>[A-Za-z`']+) (?:says|told you), '(?:[^']*\bMaster\b[^']*|As you wish, oh great one\.)'$",
+            @"^(?<pet>[A-Za-z`'][A-Za-z`' ]*?) (?:says|told you), '(?:[^']*\bMaster\b[^']*|As you wish, oh great one\.)'$",
             RegexOptions.Compiled);
         private static readonly Regex RxSlainBy = new(@"^(?<mob>.+?) has been slain by .+?!$", RegexOptions.Compiled);
         private static readonly Regex RxYouSlain = new(@"^You have slain (?<mob>.+?)!$", RegexOptions.Compiled);
