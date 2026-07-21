@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -107,6 +109,10 @@ namespace EqlMetrics
             else StatusText.Text = "click the folder icon to pick your log";
 
             _timer.Start();
+
+            // Quiet check for a newer GitHub release, a few seconds after launch so it never
+            // blocks startup. Flashes only if there's actually an update (per user's choice).
+            _ = CheckForUpdatesAsync(userInitiated: false);
         }
 
         protected override void OnSourceInitialized(EventArgs e)
@@ -1024,6 +1030,84 @@ namespace EqlMetrics
 
         private static string Short(string s) => s.Length > 80 ? s.Substring(0, 80) + "…" : s;
         private void BtnExpand_Click(object sender, RoutedEventArgs e) => ApplyExpanded(MaxPanel.Visibility != Visibility.Visible);
+
+        // ================= update check (GitHub releases) =================
+        private bool _checkingUpdate;
+        private UpdateInfo? _lastUpdate;      // most recent successful/failed check result
+
+        /// <summary>The running build's version, e.g. "0.5.0" — from the assembly's &lt;Version&gt;.</summary>
+        public string AppVersion
+        {
+            get
+            {
+                var v = Assembly.GetExecutingAssembly().GetName().Version;
+                // AssemblyVersion is 4-part (0.5.0.0); trim the trailing .0 build/revision for display.
+                return v == null ? "0.0.0" : $"{v.Major}.{v.Minor}.{v.Build}";
+            }
+        }
+
+        /// <summary>Human-readable status the Settings window shows for the update line.</summary>
+        public string UpdateStatus
+        {
+            get
+            {
+                if (_checkingUpdate) return "Checking…";
+                if (_lastUpdate == null) return $"v{AppVersion} — not checked yet";
+                if (!_lastUpdate.Ok) return $"v{AppVersion} — check failed ({Short(_lastUpdate.Error ?? "error")})";
+                return _lastUpdate.UpdateAvailable
+                    ? $"Update available: v{_lastUpdate.LatestVersion} (you have v{AppVersion})"
+                    : $"v{AppVersion} — up to date";
+            }
+        }
+
+        /// <summary>True when the last check found a newer release (Settings uses this to enable its link).</summary>
+        public bool UpdateAvailable => _lastUpdate?.Ok == true && _lastUpdate.UpdateAvailable;
+        public string? LatestReleaseUrl => _lastUpdate?.ReleaseUrl;
+
+        /// <summary>Fired when a check completes so the open Settings window can refresh its label.</summary>
+        public event Action? UpdateStatusChanged;
+
+        public async Task CheckForUpdatesAsync(bool userInitiated)
+        {
+            if (_checkingUpdate) return;
+            _checkingUpdate = true;
+            UpdateStatusChanged?.Invoke();
+            if (userInitiated) ShowToast("⬇", "Checking GitHub for updates…", AccentGold);
+            try
+            {
+                var info = await UpdateChecker.CheckAsync(AppVersion);
+                _lastUpdate = info;
+
+                if (info.Ok && info.UpdateAvailable)
+                {
+                    _flash ??= new CenterFlash { Owner = this };
+                    _flash.Flash("⬆", "UPDATE AVAILABLE", $"v{info.LatestVersion} — git pull to update", FlQuickBuff, holdMs: 2600);
+                    if (userInitiated) ShowToastDone("⬆", $"Update available — v{info.LatestVersion}", AccentGold);
+                }
+                else if (userInitiated)
+                {
+                    if (!info.Ok) ShowToastDone("✗", "Update check failed: " + Short(info.Error ?? "error"), DmgIn);
+                    else ShowToastDone("✓", $"Up to date — v{AppVersion}", Heal);
+                }
+            }
+            catch (Exception ex)
+            {
+                _lastUpdate = new UpdateInfo { CurrentVersion = AppVersion, Error = ex.Message };
+                if (userInitiated) ShowToastDone("✗", "Update check failed: " + Short(ex.Message), DmgIn);
+            }
+            finally
+            {
+                _checkingUpdate = false;
+                UpdateStatusChanged?.Invoke();
+            }
+        }
+
+        /// <summary>Open the latest release page (or the releases list) in the default browser.</summary>
+        public void OpenReleasePage()
+        {
+            string url = LatestReleaseUrl ?? $"https://github.com/{UpdateChecker.DefaultOwner}/{UpdateChecker.DefaultRepo}/releases/latest";
+            try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); } catch { }
+        }
 
         // ================= settings window =================
         private SettingsWindow? _settingsWin;

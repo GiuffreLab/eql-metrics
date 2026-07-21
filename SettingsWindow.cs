@@ -16,6 +16,8 @@ namespace EqlMetrics
         private readonly MainWindow _m;
         private readonly Settings _s;
         private TextBlock _spellStatus = null!;
+        private TextBlock _updateStatus = null!;
+        private FrameworkElement? _openRelease;
 
         private static SolidColorBrush B(string h) { var c = (Color)ColorConverter.ConvertFromString(h); var b = new SolidColorBrush(c); b.Freeze(); return b; }
         private static readonly Brush Bg = B("#0B0D11"), Stroke = B("#2A313B"), Dim = B("#8A97AB"), Text = B("#E8EEF7"),
@@ -60,6 +62,16 @@ namespace EqlMetrics
                 _spellStatus.Text = "updating… progress shows on the overlay";
             }));
 
+            root.Children.Add(Section("UPDATES"));
+            _updateStatus = new TextBlock { Text = _m.UpdateStatus, Foreground = Dim, FontSize = 11, Margin = new Thickness(2, 0, 0, 7), TextWrapping = TextWrapping.Wrap };
+            root.Children.Add(_updateStatus);
+            root.Children.Add(ActionBtn("Check for updates now", Accent, () => { _ = _m.CheckForUpdatesAsync(userInitiated: true); }));
+            _openRelease = ActionBtn("Open release page", Green, () => _m.OpenReleasePage());
+            _openRelease.Visibility = _m.UpdateAvailable ? Visibility.Visible : Visibility.Collapsed;
+            root.Children.Add(_openRelease);
+            _m.UpdateStatusChanged += OnUpdateChanged;
+            Closed += (_, __) => _m.UpdateStatusChanged -= OnUpdateChanged;
+
             root.Children.Add(Section("RESET"));
             root.Children.Add(ActionBtn("Reset session stats", Red, () => _m.ResetSessionNow()));
             root.Children.Add(ActionBtn("Reset learned buff timers", Red, () => _m.ResetLearnedBuffs()));
@@ -67,6 +79,16 @@ namespace EqlMetrics
             root.Children.Add(new TextBlock { Text = "changes save automatically", Foreground = Dim, FontSize = 10, Margin = new Thickness(2, 14, 0, 0) });
 
             Content = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = root, Background = Bg };
+        }
+
+        private void OnUpdateChanged()
+        {
+            void Apply()
+            {
+                _updateStatus.Text = _m.UpdateStatus;
+                if (_openRelease != null) _openRelease.Visibility = _m.UpdateAvailable ? Visibility.Visible : Visibility.Collapsed;
+            }
+            if (Dispatcher.CheckAccess()) Apply(); else Dispatcher.Invoke(Apply);
         }
 
         private void Save() => _m.SaveSettings();
