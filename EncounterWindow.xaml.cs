@@ -54,6 +54,23 @@ namespace EqlMetrics
             T("Enemies", a.EnemyNames.Count.ToString("0"), EqlUi.Text);
             root.Children.Add(tiles);
 
+            // ---- avoidance (incoming melee; mitigation/AC isn't in the log) ----
+            if (a.SwingsAtYou > 0)
+            {
+                root.Children.Add(EqlUi.Section("AVOIDANCE — incoming melee"));
+                var av = new WrapPanel();
+                void A(string k, string v, Brush b) => av.Children.Add(EqlUi.StatBox(k, v, b));
+                A("Avoided", a.AvoidedPct.ToString("0") + "%", EqlUi.Melee);
+                A("Swings", a.SwingsAtYou.ToString("0"), EqlUi.Text);
+                A("Dodge", a.Dodged.ToString("0"), EqlUi.Grp);
+                A("Parry", a.Parried.ToString("0"), EqlUi.Melee);
+                A("Block", a.Blocked.ToString("0"), EqlUi.You);
+                A("Miss", a.IncomingMissed.ToString("0"), EqlUi.Dim);
+                A("Hit", a.MeleeSwingsLanded.ToString("0"), EqlUi.DmgIn);
+                if (a.StunsTaken > 0) A("Stuns", a.StunsTaken.ToString("0"), EqlUi.Nuke);
+                root.Children.Add(av);
+            }
+
             // ---- timeline ----
             root.Children.Add(EqlUi.Section("DPS OVER TIME"));
             root.Children.Add(EqlUi.Timeline(e.DpsBuckets, e.InBuckets, 720, 130));

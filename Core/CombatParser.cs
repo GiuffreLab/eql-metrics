@@ -122,6 +122,8 @@ namespace EqlMetrics.Core
         private static readonly Regex RxMelee = new(@"^(?<a>.+?) (?<verb>" + VerbAlt + @") (?<t>.+?) for (?<d>\d+) points? of damage\." + Mod + "$", RegexOptions.Compiled);
         private static readonly Regex RxMissThird = new(@"^(?<a>.+?) tries to (?<verb>[A-Za-z]+) (?<t>.+?), but misses!$", RegexOptions.Compiled);
         private static readonly Regex RxMissYou = new(@"^You try to (?<verb>[A-Za-z]+) (?<t>.+?), but miss!$", RegexOptions.Compiled);
+        // you actively avoid an incoming swing: "<mob> tries to <verb> YOU, but YOU dodge!"
+        private static readonly Regex RxAvoidYou = new(@"^.+? tries to [A-Za-z]+ YOU, but YOU (?<how>dodge|parry|block|riposte)!$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex RxNuke = new(@"^(?<a>.+?) hits? (?<t>.+?) for (?<d>\d+) points? of (?<type>[A-Za-z]+) damage by (?<spell>.+?)\." + Mod + "$", RegexOptions.Compiled);
         private static readonly Regex RxDot = new(@"^(?<t>.+?) has taken (?<d>\d+) damage from (?<rest>.+?)\." + Mod + "$", RegexOptions.Compiled);
         private static readonly Regex RxHeal = new(@"^(?<healer>.+?) healed (?<t>.+?)(?: over time)? for (?<amt>\d+)(?: \((?<pot>\d+)\))? hit points by (?<spell>.+?)\.$", RegexOptions.Compiled);
@@ -226,6 +228,23 @@ namespace EqlMetrics.Core
             _cur?.Agg.Miss(attacker, skill, DamageKind.Melee);
         }
 
+        // ---- incoming-melee avoidance (survivability), routed to session + current encounter ----
+        private void RouteAvoidByYou(string how, DateTime dt)
+        {
+            Session.AvoidedByYou(how, dt);
+            Ensure(dt).Agg.AvoidedByYou(how, dt);
+        }
+        private void RouteIncomingMiss(DateTime dt)
+        {
+            Session.IncomingMiss(dt);
+            Ensure(dt).Agg.IncomingMiss(dt);
+        }
+        private void RouteStun(DateTime dt)
+        {
+            Session.Stunned(dt);
+            Ensure(dt).Agg.Stunned(dt);
+        }
+
         // ---------- main entry ----------
         public bool Apply(string line)
         {
@@ -251,6 +270,11 @@ namespace EqlMetrics.Core
 
             // ---- Mend (monk self-heal; the log gives no amount, just that it fired) ----
             if (msg == "You mend your wounds and heal some damage.") { RecordMend(dt); return true; }
+
+            // ---- incoming-melee avoidance (you dodged/parried/blocked/riposted a swing) + stuns ----
+            var av = RxAvoidYou.Match(msg);
+            if (av.Success) { RouteAvoidByYou(av.Groups["how"].Value.ToLowerInvariant(), dt); return true; }
+            if (msg == "You are stunned!") { RouteStun(dt); return true; }
 
             // ---- melee ----
             var mm = RxMelee.Match(msg);
@@ -281,8 +305,11 @@ namespace EqlMetrics.Core
             var mt = RxMissThird.Match(msg);
             if (mt.Success)
             {
-                if (!IsPlayerToken(mt.Groups["t"].Value) && IsMeleeVerb(mt.Groups["verb"].Value))
-                    RouteMiss(mt.Groups["a"].Value, SkillFor(mt.Groups["verb"].Value));
+                if (IsMeleeVerb(mt.Groups["verb"].Value))
+                {
+                    if (IsPlayerToken(mt.Groups["t"].Value)) RouteIncomingMiss(dt);   // a swing at you that whiffed (avoidance)
+                    else RouteMiss(mt.Groups["a"].Value, SkillFor(mt.Groups["verb"].Value));
+                }
                 return true;
             }
 
@@ -462,6 +489,19 @@ namespace EqlMetrics.Core
         public long DamageTakenPet => Session.DamageTakenPet;
         public long HealingDone => Session.HealingDone;
         public double DamageTakenPerHour => DamageTaken / SessionHours;
+
+        // ---- incoming-melee avoidance (survivability) ----
+        public long Dodged => Session.Dodged;
+        public long Parried => Session.Parried;
+        public long Blocked => Session.Blocked;
+        public long Riposted => Session.Riposted;
+        public long IncomingMissed => Session.IncomingMissed;
+        public long MeleeSwingsLanded => Session.MeleeSwingsLanded;
+        public long SwingsAtYou => Session.SwingsAtYou;
+        public long ActiveAvoids => Session.ActiveAvoids;
+        public double AvoidedPct => Session.AvoidedPct;
+        public double ActiveAvoidPct => Session.ActiveAvoidPct;
+        public long StunsTaken => Session.StunsTaken;
         public IEnumerable<HealStat> HealsByAmount => Session.HealsByAmount;
         public double OverhealPct => Session.OverhealPct;
 

@@ -25,6 +25,33 @@ namespace EqlMetrics.Core
         public long BiggestHitTaken;
         public string BiggestHitTakenFrom = "";
 
+        // ---- incoming-melee avoidance (survivability). Mitigation/AC is NOT derivable (log shows only final dmg). ----
+        public long MeleeSwingsLanded;                       // melee hits that landed on the player
+        public long Dodged, Parried, Blocked, Riposted;      // the player actively avoided a swing
+        public long IncomingMissed;                          // the mob simply missed
+        public long StunsTaken;
+
+        public void AvoidedByYou(string how, DateTime t)
+        {
+            Touch(t);
+            switch (how)
+            {
+                case "dodge": Dodged++; break;
+                case "parry": Parried++; break;
+                case "block": Blocked++; break;
+                case "riposte": Riposted++; break;
+            }
+        }
+        public void IncomingMiss(DateTime t) { Touch(t); IncomingMissed++; }
+        public void Stunned(DateTime t) { Touch(t); StunsTaken++; }
+
+        public long ActiveAvoids => Dodged + Parried + Blocked + Riposted;
+        public long SwingsAtYou => MeleeSwingsLanded + ActiveAvoids + IncomingMissed;
+        public long AvoidedTotal => ActiveAvoids + IncomingMissed;   // every swing that didn't land
+        public double AvoidedPct => SwingsAtYou > 0 ? 100.0 * AvoidedTotal / SwingsAtYou : 0;
+        public double ActiveAvoidPct => SwingsAtYou > 0 ? 100.0 * ActiveAvoids / SwingsAtYou : 0;
+        public double DamageTakenPerHour => DamageTaken / Hours;
+
         public DateTime? FirstTime;
         public DateTime LastTime;
         public string PrimaryEnemy = "";
@@ -70,6 +97,7 @@ namespace EqlMetrics.Core
         {
             Touch(t);
             DamageTaken += dmg;
+            if (kind == DamageKind.Melee) MeleeSwingsLanded++;   // a landed swing (for avoidance rate)
             if (dmg > BiggestHitTaken) { BiggestHitTaken = dmg; BiggestHitTakenFrom = attacker; }
             AttributeEnemy(attacker, ability, kind, dmg, _o.PlayerName);
         }

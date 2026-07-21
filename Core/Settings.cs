@@ -18,6 +18,15 @@ namespace EqlMetrics.Core
         public bool ClickThrough { get; set; } = false;
         public bool FollowFromStart { get; set; } = false; // start at end of file (live) by default
 
+        // ---- notification toggles (all default on) ----
+        public bool NotifMaster { get; set; } = true;      // master switch for all center-screen alerts
+        public bool NotifBuffs { get; set; } = true;       // buff/debuff gained & faded
+        public bool NotifStealth { get; set; } = true;     // hide/sneak success & failure
+        public bool NotifSkills { get; set; } = true;      // backstab / kick / strike / cleave pop-ups
+        public bool NotifQuickBuff { get; set; } = true;   // Quick Buff ready
+        public bool NotifMend { get; set; } = true;        // Mend self-heal
+        public int NotifMaxOnScreen { get; set; } = 3;     // 1..5 rising notifications at once
+
         private static string Dir =>
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "EqlMetrics");
         private static string FilePath => Path.Combine(Dir, "settings.json");

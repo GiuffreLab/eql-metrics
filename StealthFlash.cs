@@ -39,7 +39,7 @@ namespace EqlMetrics
         private const int FadeIn = 150;
         private const int FadeOut = 560;
         private const double SpawnGapMs = 700; // min spacing between successive toasts (keeps them ~a row apart)
-        private const int MaxActive = 3;       // at most 3 rising at once
+        public int MaxActive = 3;              // at most N rising at once (set from settings)
         private const int MaxQueue = 6;        // drop oldest waiting toast if a fight floods us
 
         public CenterFlash()

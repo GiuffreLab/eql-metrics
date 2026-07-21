@@ -73,10 +73,7 @@
                     <TextBlock x:Name="CharLabel" Text="" Foreground="#8A97AB" FontSize="11" Margin="7,0,0,0" VerticalAlignment="Center"/>
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
                         <Button x:Name="BtnPick"      Style="{StaticResource IconBtn}" Content="&#128193;" ToolTip="Pick log file" Click="BtnPick_Click"/>
-                        <Button x:Name="BtnUpdateSpells" Style="{StaticResource IconBtn}" Content="&#11015;" ToolTip="Update spell data from the EQL wiki" Click="BtnUpdateSpells_Click"/>
-                        <Button x:Name="BtnReset"     Style="{StaticResource IconBtn}" Content="&#8635;"    ToolTip="Reset session" Click="BtnReset_Click"/>
-                        <Button x:Name="BtnDimDown"   Style="{StaticResource IconBtn}" Content="&#9788;"    ToolTip="More transparent" Click="BtnDimDown_Click"/>
-                        <Button x:Name="BtnDimUp"     Style="{StaticResource IconBtn}" Content="&#9728;"    ToolTip="More solid" Click="BtnDimUp_Click"/>
+                        <Button x:Name="BtnSettings"  Style="{StaticResource IconBtn}" Content="&#9881;"    ToolTip="Settings" Click="BtnSettings_Click"/>
                         <Button x:Name="BtnClickThru" Style="{StaticResource IconBtn}" Content="&#8856;"    ToolTip="Toggle click-through (Ctrl+Alt+X)" Click="BtnClickThru_Click"/>
                         <Button x:Name="BtnExpand"    Style="{StaticResource IconBtn}" Content="&#9633;"    ToolTip="Expand / collapse" Click="BtnExpand_Click"/>
                         <Button x:Name="BtnClose"     Style="{StaticResource IconBtn}" Content="&#10005;"   ToolTip="Close" Click="BtnClose_Click"/>
@@ -122,12 +119,14 @@
                 <StackPanel Orientation="Horizontal" Margin="0,2,0,8">
                     <Border x:Name="TabOverview"   Tag="Overview"   Padding="10,5" Margin="0,0,4,0" CornerRadius="8" Cursor="Hand" MouseLeftButtonUp="Tab_Click"><TextBlock Text="Overview" Foreground="#E8EEF7" FontSize="11" FontWeight="SemiBold"/></Border>
                     <Border x:Name="TabBreakdown"  Tag="Breakdown"  Padding="10,5" Margin="0,0,4,0" CornerRadius="8" Cursor="Hand" MouseLeftButtonUp="Tab_Click"><TextBlock Text="Breakdown" Foreground="#8A97AB" FontSize="11" FontWeight="SemiBold"/></Border>
+                    <Border x:Name="TabAvoidance"  Tag="Avoidance"  Padding="10,5" Margin="0,0,4,0" CornerRadius="8" Cursor="Hand" MouseLeftButtonUp="Tab_Click"><TextBlock Text="Avoidance" Foreground="#8A97AB" FontSize="11" FontWeight="SemiBold"/></Border>
                     <Border x:Name="TabEncounters" Tag="Encounters" Padding="10,5" Margin="0,0,4,0" CornerRadius="8" Cursor="Hand" MouseLeftButtonUp="Tab_Click"><TextBlock Text="Encounters" Foreground="#8A97AB" FontSize="11" FontWeight="SemiBold"/></Border>
                     <Border x:Name="TabLoot"       Tag="Loot"       Padding="10,5" CornerRadius="8" Cursor="Hand" MouseLeftButtonUp="Tab_Click"><TextBlock Text="Loot" Foreground="#8A97AB" FontSize="11" FontWeight="SemiBold"/></Border>
                 </StackPanel>
 
                 <StackPanel x:Name="OverviewPanel"/>
                 <StackPanel x:Name="BreakdownPanel"/>
+                <StackPanel x:Name="AvoidancePanel"/>
                 <StackPanel x:Name="EncountersPanel"/>
                 <StackPanel x:Name="LootPanel"/>
             </StackPanel>

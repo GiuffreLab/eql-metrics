@@ -17,6 +17,19 @@ namespace EqlMetrics
         public static string SpellsPath =>
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "EqlMetrics", "spells.json");
 
+        /// <summary>Human-readable state of the downloaded spell data (for the Settings window).</summary>
+        public static string Status()
+        {
+            try
+            {
+                if (!File.Exists(SpellsPath)) return "not downloaded yet";
+                int count = 0;
+                try { count = JsonSerializer.Deserialize<List<SpellRow>>(File.ReadAllText(SpellsPath))?.Count ?? 0; } catch { }
+                return $"{count} spells · updated {File.GetLastWriteTime(SpellsPath):yyyy-MM-dd}";
+            }
+            catch { return "unknown"; }
+        }
+
         /// <summary>Returns the number of self-buffs loaded (0 = kept baked-in defaults).</summary>
         public static int LoadIntoBuffData()
         {

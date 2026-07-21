@@ -209,6 +209,7 @@ namespace EqlMetrics
                     {
                         case "Overview": BuildOverview(s); break;
                         case "Breakdown": BuildBreakdown(s); break;
+                        case "Avoidance": BuildAvoidance(s); break;
                         case "Encounters": BuildEncounters(s); break;
                         case "Loot": BuildLoot(s); break;
                     }
@@ -221,6 +222,7 @@ namespace EqlMetrics
             CoreRates.Children.Clear();
             CoreRates.Children.Add(Chip("HPS", s.Hps.ToString("0"), "", Heal));
             CoreRates.Children.Add(Chip("IN DPS", s.IncomingDpsMe.ToString("0"), "", DmgIn));
+            if (s.SwingsAtYou > 0) CoreRates.Children.Add(Chip("AVOID", s.AvoidedPct.ToString("0") + "%", "", Melee));
             CoreRates.Children.Add(Chip("ENEMY HPS", s.EnemyHps.ToString("0"), "", Nuke));
             CoreRates.Children.Add(Chip("XP/HR", s.XpPerHour.ToString("0.0") + "%", "", Xp));
         }
@@ -239,8 +241,19 @@ namespace EqlMetrics
         {
             var now = DateTime.Now;
             _flash ??= new CenterFlash { Owner = this };   // closes with the main window
+            _flash.MaxActive = (int)Clamp(_settings.NotifMaxOnScreen, 1, 5);
+            if (!_settings.NotifMaster) return;            // all alerts off (cursors advance on re-enable via freshness gate)
 
-            // ---- hide / sneak (success + failure) ----
+            if (_settings.NotifStealth) NotifyStealth(s, now);
+            if (_settings.NotifBuffs) NotifyBuffs(s, now);
+            if (_settings.NotifSkills) NotifySkills(s, now);
+            if (_settings.NotifMend) NotifyMend(s, now);
+            if (_settings.NotifQuickBuff) NotifyQuickBuff(s, now);
+        }
+
+        // ---- hide / sneak (success + failure) ----
+        private void NotifyStealth(SessionStats s, DateTime now)
+        {
             for (int i = 0; i < s.StealthEvents.Count; i++)
             {
                 var ev = s.StealthEvents[i];
@@ -255,13 +268,15 @@ namespace EqlMetrics
                     case StealthKind.SneakFail: _flash!.Flash("⚠", "SNEAK FAILED", "you are making noise", FlFail); break;
                 }
             }
+        }
 
-            // ---- buff gained (coalesce a mass cast into one flash) ----
+        // ---- buff / debuff gained & faded ----
+        private void NotifyBuffs(SessionStats s, DateTime now)
+        {
             var gains = FreshSince(s.Buffs.Gains, ref _lastGainTime, now);
             if (gains.Count == 1) _flash!.Flash("", gains[0].Name, "buff gained", FlGain);
             else if (gains.Count > 1) _flash!.Flash("✦", gains.Count + " buffs", "gained", FlGain);
 
-            // ---- buff / debuff faded ----
             var fades = FreshSince(s.Buffs.Fades, ref _lastFadeTime, now);
             if (fades.Count > 2) _flash!.Flash("", fades.Count + " buffs", "faded", FlFade);
             else foreach (var f in fades)
@@ -269,8 +284,11 @@ namespace EqlMetrics
                     if (f.Category == BuffCat.Debuff) _flash!.Flash("", f.Name, "wore off " + WhoFor(s, f), FlDebuff);
                     else _flash!.Flash("", f.Name, "faded from " + WhoFor(s, f), FlFade);
                 }
+        }
 
-            // ---- notable skill procs (backstab; more added as class log text is learned) ----
+        // ---- skill pop-ups: backstab procs + cleave/kick/strike AoE bursts ----
+        private void NotifySkills(SessionStats s, DateTime now)
+        {
             var fresh = new List<SkillProc>();
             for (int i = 0; i < s.SkillProcs.Count; i++)
             {
@@ -292,7 +310,6 @@ namespace EqlMetrics
                     i++;
                     continue;
                 }
-                // merge consecutive same-skill hits within 1.5s — a double/multi attack off one activation
                 long total = p.Damage; bool crit = p.Crit; int hits = 1; var last = p; int j = i + 1;
                 while (j < fresh.Count && !fresh[j].Miss
                        && string.Equals(fresh[j].Skill, p.Skill, StringComparison.OrdinalIgnoreCase)
@@ -309,14 +326,12 @@ namespace EqlMetrics
                 i = j;
             }
 
-            // ---- AoE melee (cleave / round kick): a burst of same-actor+skill hits on 2+ targets = the ability firing ----
             for (int i = 0; i < s.CleaveHits.Count; i++)
             {
                 var ch = s.CleaveHits[i];
                 if (ch.Time <= _lastCleaveTime) continue;
                 _lastCleaveTime = ch.Time;
                 if ((now - ch.Time).TotalSeconds > FreshSec) continue;
-                // start a fresh burst if the actor OR skill changed, or there's a >1.5s gap (new activation)
                 if (_cleaveBurst.Count > 0 &&
                     (!string.Equals(_cleaveBurst[_cleaveBurst.Count - 1].Actor, ch.Actor, StringComparison.OrdinalIgnoreCase)
                      || !string.Equals(_cleaveBurst[_cleaveBurst.Count - 1].Skill, ch.Skill, StringComparison.OrdinalIgnoreCase)
@@ -326,8 +341,11 @@ namespace EqlMetrics
                 _cleaveBurstWall = now;
             }
             if (_cleaveBurst.Count > 0 && (now - _cleaveBurstWall).TotalSeconds >= 1.0) FinalizeCleave(s);   // settle
+        }
 
-            // ---- Mend (monk self-heal; no amount in the log, just confirm it fired) ----
+        // ---- Mend (monk self-heal; no amount in the log, just confirm it fired) ----
+        private void NotifyMend(SessionStats s, DateTime now)
+        {
             for (int i = 0; i < s.MendEvents.Count; i++)
             {
                 var mt = s.MendEvents[i];
@@ -336,8 +354,11 @@ namespace EqlMetrics
                 if ((now - mt).TotalSeconds > FreshSec) continue;
                 _flash!.Flash("✚", "MEND", "wounds mended", FlMend, holdMs: 1200);
             }
+        }
 
-            // ---- Quick Buff ready (timed off the activation line; no "ready" log exists) ----
+        // ---- Quick Buff ready (timed off the activation line; no "ready" log exists) ----
+        private void NotifyQuickBuff(SessionStats s, DateTime now)
+        {
             if (s.QuickBuffCastAt is DateTime qb)
             {
                 var ready = qb.AddSeconds(SessionStats.QuickBuffCooldownSec);
@@ -418,6 +439,7 @@ namespace EqlMetrics
             cons.Children.Add(StatBox("Damage out", s.CombinedDps.ToString("0.0"), YouT));
             cons.Children.Add(StatBox("Healing out", s.Hps.ToString("0.0"), Heal));
             cons.Children.Add(StatBox("Damage in", s.IncomingDpsMe.ToString("0.0"), DmgIn));
+            if (s.SwingsAtYou > 0) cons.Children.Add(StatBox("Avoided", s.AvoidedPct.ToString("0") + "%", Melee));
             cons.Children.Add(StatBox("Enemy heal", s.EnemyHps.ToString("0.0"), Nuke));
             p.Children.Add(cons);
 
@@ -538,6 +560,54 @@ namespace EqlMetrics
                     (double)h.Effective / top, Heal, Heal, badge: "HEAL", badgeBrush: Heal));
         }
 
+        // ================= Avoidance tab =================
+        private void BuildAvoidance(SessionStats s)
+        {
+            var p = AvoidancePanel;
+            p.Children.Clear();
+
+            p.Children.Add(SectionHeader("SURVIVABILITY"));
+            var sum = new WrapPanel();
+            sum.Children.Add(StatBox("Avoided", s.AvoidedPct.ToString("0") + "%", Melee));
+            sum.Children.Add(StatBox("Swings at you", s.SwingsAtYou.ToString("0"), Text));
+            sum.Children.Add(StatBox("Dmg taken", s.DamageTaken.ToString("0"), DmgIn));
+            sum.Children.Add(StatBox("DTPS", s.IncomingDpsMe.ToString("0.0"), DmgIn));
+            sum.Children.Add(StatBox("Biggest hit", s.BiggestHitTaken.ToString("0"), DmgIn));
+            sum.Children.Add(StatBox("Stuns", s.StunsTaken.ToString("0"), Nuke));
+            p.Children.Add(sum);
+
+            p.Children.Add(SectionHeader("HOW YOU AVOID"));
+            if (s.SwingsAtYou == 0) p.Children.Add(Hint("no incoming swings yet"));
+            else
+            {
+                long swings = Math.Max(1, s.SwingsAtYou);
+                void AvoidRow(string name, long n, Brush c) => p.Children.Add(Row(name, n + " of " + s.SwingsAtYou + " swings",
+                    (100.0 * n / swings).ToString("0") + "%", "", (double)n / swings, c, c));
+                AvoidRow("Dodge", s.Dodged, Grp);
+                AvoidRow("Parry", s.Parried, Melee);
+                AvoidRow("Block", s.Blocked, You);
+                if (s.Riposted > 0) AvoidRow("Riposte", s.Riposted, Xp);
+                AvoidRow("Missed (mob)", s.IncomingMissed, Dim);
+                AvoidRow("Hit (landed)", s.MeleeSwingsLanded, DmgIn);
+            }
+
+            p.Children.Add(SectionHeader("INCOMING BY ENEMY"));
+            var en = s.Session.Enemies.Where(c => c.TotalDamage > 0).OrderByDescending(c => c.TotalDamage).Take(6).ToList();
+            if (en.Count == 0) p.Children.Add(Hint("—"));
+            else
+            {
+                long top = Math.Max(1, en[0].TotalDamage);
+                foreach (var c in en)
+                    p.Children.Add(Row(c.Name, "dealt to party", c.TotalDamage.ToString("0"), "dmg", (double)c.TotalDamage / top, DmgIn, DmgIn));
+            }
+
+            p.Children.Add(new TextBlock
+            {
+                Text = "avoidance only — the log shows final damage, so armor mitigation / AC can't be measured",
+                Foreground = Dim, FontSize = 9.5, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(2, 8, 0, 2)
+            });
+        }
+
         // ================= Encounters tab =================
         private Encounter? SelectedEncounter(SessionStats s)
         {
@@ -565,6 +635,7 @@ namespace EqlMetrics
             sum.Children.Add(StatBox("You+pet DPS", e.Agg.CombinedDps.ToString("0.0"), YouT));
             sum.Children.Add(StatBox("HPS", e.Agg.Hps.ToString("0.0"), Heal));
             sum.Children.Add(StatBox("Dmg taken", e.Agg.DamageTaken.ToString("0"), DmgIn));
+            if (e.Agg.SwingsAtYou > 0) sum.Children.Add(StatBox("Avoided", e.Agg.AvoidedPct.ToString("0") + "%", Melee));
             sum.Children.Add(StatBox("Enemy HPS", e.Agg.EnemyHps.ToString("0.0"), Nuke));
             p.Children.Add(sum);
 
@@ -811,7 +882,7 @@ namespace EqlMetrics
         private void SelectTab(string tab)
         {
             _tab = tab;
-            foreach (var (border, name) in new[] { (TabOverview, "Overview"), (TabBreakdown, "Breakdown"), (TabEncounters, "Encounters"), (TabLoot, "Loot") })
+            foreach (var (border, name) in new[] { (TabOverview, "Overview"), (TabBreakdown, "Breakdown"), (TabAvoidance, "Avoidance"), (TabEncounters, "Encounters"), (TabLoot, "Loot") })
             {
                 bool on = name == tab;
                 border.Background = on ? TabSel : Brushes.Transparent;
@@ -819,6 +890,7 @@ namespace EqlMetrics
             }
             OverviewPanel.Visibility = tab == "Overview" ? Visibility.Visible : Visibility.Collapsed;
             BreakdownPanel.Visibility = tab == "Breakdown" ? Visibility.Visible : Visibility.Collapsed;
+            AvoidancePanel.Visibility = tab == "Avoidance" ? Visibility.Visible : Visibility.Collapsed;
             EncountersPanel.Visibility = tab == "Encounters" ? Visibility.Visible : Visibility.Collapsed;
             LootPanel.Visibility = tab == "Loot" ? Visibility.Visible : Visibility.Collapsed;
             Refresh();
@@ -844,20 +916,19 @@ namespace EqlMetrics
             if (dlg.ShowDialog() == true) { _selected = ""; _selEncStart = null; LoadLog(dlg.FileName); }
         }
 
-        private void BtnReset_Click(object sender, RoutedEventArgs e) { lock (_lock) { _stats.Reset(); } _selEncStart = null; }
-
         // ================= spell-data update =================
         private CancellationTokenSource? _spellCts;
         private bool _updatingSpells;
         private DispatcherTimer? _toastTimer;
 
-        private async void BtnUpdateSpells_Click(object sender, RoutedEventArgs e)
+        public bool IsUpdatingSpells => _updatingSpells;
+
+        public async void RunSpellUpdate()
         {
-            if (_updatingSpells) { try { _spellCts?.Cancel(); } catch { } return; }   // second click cancels
+            if (_updatingSpells) { try { _spellCts?.Cancel(); } catch { } return; }   // called again cancels
             _updatingSpells = true;
             _spellCts = new CancellationTokenSource();
             _toastTimer?.Stop();
-            BtnUpdateSpells.Foreground = AccentGold;
 
             ShowToast("⬇", "Contacting the wiki…", AccentGold);
             ToastBar.Visibility = Visibility.Visible;
@@ -895,7 +966,6 @@ namespace EqlMetrics
                 try { _spellCts?.Dispose(); } catch { }
                 _spellCts = null;
                 ToastBar.IsIndeterminate = false;
-                BtnUpdateSpells.Foreground = Dim;
             }
         }
 
@@ -917,9 +987,38 @@ namespace EqlMetrics
         }
 
         private static string Short(string s) => s.Length > 80 ? s.Substring(0, 80) + "…" : s;
-        private void BtnDimDown_Click(object sender, RoutedEventArgs e) => Backdrop.Opacity = Clamp(Backdrop.Opacity - 0.08, 0.12, 0.95);
-        private void BtnDimUp_Click(object sender, RoutedEventArgs e) => Backdrop.Opacity = Clamp(Backdrop.Opacity + 0.08, 0.12, 0.95);
         private void BtnExpand_Click(object sender, RoutedEventArgs e) => ApplyExpanded(MaxPanel.Visibility != Visibility.Visible);
+
+        // ================= settings window =================
+        private SettingsWindow? _settingsWin;
+        private void BtnSettings_Click(object sender, RoutedEventArgs e)
+        {
+            if (_settingsWin != null) { try { _settingsWin.Activate(); return; } catch { _settingsWin = null; } }
+            _settingsWin = new SettingsWindow(this) { Owner = this };
+            _settingsWin.Closed += (_, __) => { _settings.Save(); _settingsWin = null; };
+            _settingsWin.Show();
+        }
+
+        // ---- surface the Settings window drives ----
+        public Settings AppSettings => _settings;
+        public double BackdropOpacity => Backdrop.Opacity;
+        public bool ClickThroughOn => _settings.ClickThrough;
+        public string CurrentLogPath => _settings.LastLogPath;
+        public string SpellDataStatus => SpellStore.Status();
+
+        public void SetBackdropOpacity(double v) { Backdrop.Opacity = Clamp(v, 0.12, 0.95); _settings.PanelAlpha = Backdrop.Opacity; }
+        public void SetClickThrough(bool on) => ApplyClickThrough(on);
+        public void SaveSettings() => _settings.Save();
+        public void ResetSessionNow() { lock (_lock) { _stats.Reset(); } _selEncStart = null; }
+        public void ResetLearnedBuffs() { _buffDur.Clear(); _buffCat.Clear(); BuffStore.Save(_buffDur, _buffCat); }
+        public void PickLog() => BtnPick_Click(this, new RoutedEventArgs());
+
+        public void SetPetName(string name)
+        {
+            _settings.PetName = (name ?? "").Trim();
+            lock (_lock) { _stats.PetName = _settings.PetName; }
+            CharLabel.Text = _settings.PlayerName + (string.IsNullOrEmpty(_settings.PetName) ? "" : "  +  " + _settings.PetName);
+        }
 
         private void ApplyExpanded(bool expanded)
         {
