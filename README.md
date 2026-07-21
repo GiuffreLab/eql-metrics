@@ -22,6 +22,7 @@ that floats over the game and matches the `default_modern` UI theme.
 - [Notifications](#notifications)
 - [Encounters & the fight pop-out](#encounters--the-fight-pop-out)
 - [Avoidance & survivability](#avoidance--survivability)
+- [XP & leveling](#xp--leveling)
 - [Settings](#settings)
 - [Spell data](#spell-data)
 - [How it works](#how-it-works)
@@ -44,7 +45,10 @@ that floats over the game and matches the `default_modern` UI theme.
 - **Center-screen combat pop-ups** that rise and fade — backstab, kick / round kick, strike,
   cleave (with double/triple attack and multi-target detection), hide/sneak success & failure,
   Quick Buff cooldown, Mend, and more.
-- **Loot, coin, motes, XP and AA** tracking with per-hour rates.
+- **XP & leveling** — live level, % into the current level, **time-to-level** and **kills-to-level**,
+  XP/hr, average XP per kill, and a **best-XP-mobs** ranking. Projections self-calibrate off your
+  level-ups (no manual setup), and it says so while it waits for the first one.
+- **Loot, coin, motes and AA** tracking with per-hour rates.
 - **One-click spell-data update** pulled from the EQL wiki (no PowerShell needed).
 - **Settings window** to toggle any notification category, set transparency, pet name, and more.
 - **Themed** to match the game's `default_modern` skin (charcoal + gold), with your own data palette.
@@ -74,7 +78,7 @@ up to three at once.
   if you have the SDK.)
 - **EverQuest Legends** running in **Windowed** or **Borderless Windowed** mode — an overlay
   can't draw on top of exclusive fullscreen.
-- **Logging enabled** in-game: type `/log on` once so the client writes `eqlog_<You>_<server>.txt`.
+- **Logging enabled** in-game: type `/log` once so the client writes `eqlog_<You>_<server>.txt`.
 
 ## Install & run
 
@@ -113,9 +117,11 @@ The window is borderless and always-on-top. Drag the title bar to move it. The t
 off (the hotkey works even while click-through is on) when you want to interact with the overlay.
 
 The **minimized HUD** shows the headline DPS, a split for you/pet, and a row of rate chips
-(HPS, incoming DPS, avoid %, enemy HPS, XP/hr). **Expand** for the tabbed view:
+(HPS, incoming DPS, avoid %, enemy HPS, XP/hr — with your level and % into it as a subline).
+**Expand** for the tabbed view:
 
-- **Overview** — consolidated totals, session rates, top damage & healing, biggest hits.
+- **Overview** — consolidated totals, an **XP & leveling** section (see below), session rates,
+  top damage & healing, biggest hits.
 - **Breakdown** — party damage and full per-ability breakdowns, healing, incoming.
 - **Avoidance** — melee survivability (see below).
 - **Encounters** — pick from recent fights, see the DPS timeline, open a detailed pop-out.
@@ -178,6 +184,30 @@ taken, DTPS, biggest hit, stuns, and which enemies are hitting you hardest.
 > been before armor, so **mitigation / AC can't be measured** — this is avoidance, not defense.
 > Likewise there's no HP/mana in the log, so there are no health bars.
 
+## XP & leveling
+
+The **Overview** tab has an **XP & leveling** section that turns your experience messages into a
+live picture of how the grind is going. It reads two kinds of log line: each `You gain experience!`
+increment, and each `You have gained a level!` ding.
+
+The catch is that the log tells you *how much* XP you just gained, but never *where you are* inside
+the current level. So EQL Metrics calibrates itself off your level-ups: the moment it sees a ding it
+baselines to 0% and starts the clock, and from then on it knows exactly how far into the level you've
+climbed. Until that first ding it shows a **"waiting for a level-up to baseline"** note instead of
+guessing — so the projections are honest rather than made up.
+
+Once baselined, the section shows:
+
+- **Level** and **% into level** — your live position in the current level.
+- **Time to level** — projected from your XP-per-hour since the last ding.
+- **Kills to level** — remaining XP divided by your average XP per kill.
+- **XP/hr** and **%/kill** — your rate and how much each kill is worth on average.
+- **Best XP mobs** — a ranking of which enemies are giving you the most XP per kill since your last
+  level, so you can see what's actually worth killing.
+
+**AA** is kept simple: the SESSION grid tracks AA gained this session and AA/hr (AA rolls in
+alongside regular XP, so there's nothing to baseline).
+
 ## Settings
 
 The **gear icon** opens a separate Settings window:
@@ -224,40 +254,6 @@ double/triple attacks, and multi-target splashes.
 20%", no Mend amount), **armor mitigation / AC**, spell-resist defense, and anything about other
 players' buffs or cooldowns. Some same-verb abilities are indistinguishable in text (e.g. Kick /
 Round Kick / Flying Kick all log as "kick") except when a multi-target splash reveals them.
-
-## Extending it
-
-Adding a new class skill is usually a one-liner once you know its log text:
-
-- A skill that should get its own pop-up on every landed hit → add its name to `NotableSkills`
-  in `Core/CombatParser.cs`.
-- A skill that can splash multiple targets (cleave-style) → add it to `BurstSkills`.
-- A brand-new melee verb the game uses → add it to the `MeleeVerbs` table so it's tracked at all.
-
-Skills that log with unique phrasing (disciplines, feign death, taunt, etc.) get their own
-detection line in `SessionStats.Apply`, following the existing patterns.
-
-## Project layout
-
-```
-Core/                 UI-agnostic parser (unit-testable)
-  CombatParser.cs     SessionStats: line parsing, encounters, buffs, skills, avoidance
-  CombatAggregate.cs  reusable rollup (session + per-encounter)
-  BuffTracker.cs      active buffs, fade/gain events, learned durations
-  BuffData.cs         self-buff message/duration table (seeded + wiki)
-  SpellCatalog.cs     applies scraped rows to BuffData
-  SpellScraper.cs     in-app EQL-wiki scraper (HttpClient)
-  Settings.cs         persisted user settings
-MainWindow.xaml(.cs)  the overlay: HUD + tabs, notification routing
-StealthFlash.cs       CenterFlash — the rising center-screen notifications
-EncounterWindow.xaml.cs   per-fight detail pop-out
-SettingsWindow.cs     the gear-icon settings window
-SpellStore.cs         loads/refreshes spells.json from %APPDATA%
-EqlUi.cs              shared dark-overlay UI building blocks
-images/               screenshots used by this README
-Run-EqlMetrics.cmd    double-click launcher (visible)
-Run-EqlMetrics.vbs    double-click launcher (silent)
-```
 
 ---
 

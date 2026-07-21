@@ -11,6 +11,15 @@ namespace EqlMetrics.Core
     /// <summary>A hide/sneak skill-check result, for the transient center-screen flash.</summary>
     public struct StealthEvent { public StealthKind Kind; public DateTime Time; }
 
+    /// <summary>Per-mob experience tally, for "which mobs give the best XP".</summary>
+    public sealed class XpMobStat
+    {
+        public string Mob = "";
+        public int Kills;
+        public double TotalPct;
+        public double AvgPct => Kills > 0 ? TotalPct / Kills : 0;
+    }
+
     /// <summary>A "notable" skill attempt (e.g. Backstab) by the player — hit, crit, or miss — for the skill-proc flash.</summary>
     public struct SkillProc { public string Skill; public long Damage; public bool Crit; public bool Miss; public string Target; public DateTime Time; }
 
@@ -42,6 +51,17 @@ namespace EqlMetrics.Core
         public double TotalXpPct;
         public int Kills;
         public int AbilityPoints;
+
+        // ---- leveling (accurate once we've seen a ding to baseline the level bar) ----
+        public int? CurrentLevel;             // from "Welcome to level N!"
+        public bool LevelBaselined;           // true after the first ding this session
+        public double LevelProgressPct;       // % into the current level since that ding
+        public DateTime? LevelAnchorTime;     // when the last ding happened (log time)
+        public int XpEventsSinceDing;         // xp gains toward the current level (~kills)
+        public int LevelsGained;              // dings this session
+        public readonly Dictionary<string, XpMobStat> XpByMob = new(StringComparer.OrdinalIgnoreCase);
+        private string? _lastSlain;
+        private DateTime _lastSlainTime;
         public readonly List<LootEntry> Loot = new();
         public readonly List<StealthEvent> StealthEvents = new();   // hide/sneak skill-check results
         public DateTime? QuickBuffCastAt;                            // last "You activate Quick Buff." (10-min cooldown)
@@ -130,8 +150,9 @@ namespace EqlMetrics.Core
         private static readonly Regex RxLoot = new(@"^You (?:have )?looted an? (?<item>.+?) from .+?corpse", RegexOptions.Compiled);
         private static readonly Regex RxMote = new(@"Mote of (?<tier>.+?) Potential", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex RxXp = new(@"^You gain (?:party )?experience!(?: \((?<pct>[\d.]+)%\))?", RegexOptions.Compiled);
-        private static readonly Regex RxSlainBy = new(@"^.+? has been slain by .+?!$", RegexOptions.Compiled);
-        private static readonly Regex RxYouSlain = new(@"^You have slain .+?!$", RegexOptions.Compiled);
+        private static readonly Regex RxLevel = new(@"^You have gained a level! Welcome to level (?<lvl>\d+)!", RegexOptions.Compiled);
+        private static readonly Regex RxSlainBy = new(@"^(?<mob>.+?) has been slain by .+?!$", RegexOptions.Compiled);
+        private static readonly Regex RxYouSlain = new(@"^You have slain (?<mob>.+?)!$", RegexOptions.Compiled);
         private static readonly Regex RxAa = new(@"^You have gained (?:an|(?<n>\d+)) ability points?!", RegexOptions.Compiled);
         private static readonly Regex RxCoin = new(@"(\d+)\s+(platinum|gold|silver|copper)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
@@ -153,6 +174,8 @@ namespace EqlMetrics.Core
             Encounters.Clear();
             TotalPlat = 0; MoteCount = 0; MotesByTier.Clear();
             TotalXpPct = 0; Kills = 0; AbilityPoints = 0;
+            CurrentLevel = null; LevelBaselined = false; LevelProgressPct = 0; LevelAnchorTime = null;
+            XpEventsSinceDing = 0; LevelsGained = 0; XpByMob.Clear(); _lastSlain = null;
             Loot.Clear();
             StealthEvents.Clear();
             SkillProcs.Clear();
@@ -403,16 +426,43 @@ namespace EqlMetrics.Core
                 return true;
             }
 
+            // ---- level up: baseline the level bar (log never gives current progress otherwise) ----
+            var lvl = RxLevel.Match(msg);
+            if (lvl.Success)
+            {
+                CurrentLevel = int.Parse(lvl.Groups["lvl"].Value, Inv);
+                LevelBaselined = true;
+                LevelProgressPct = 0;          // fresh into the new level
+                XpEventsSinceDing = 0;
+                LevelAnchorTime = dt;
+                LevelsGained++;
+                return true;
+            }
+
             // ---- xp ----
             var xp = RxXp.Match(msg);
             if (xp.Success)
             {
-                if (xp.Groups["pct"].Success) TotalXpPct += double.Parse(xp.Groups["pct"].Value, Inv);
+                if (xp.Groups["pct"].Success)
+                {
+                    double pct = double.Parse(xp.Groups["pct"].Value, Inv);
+                    TotalXpPct += pct;
+                    if (LevelBaselined) { LevelProgressPct += pct; XpEventsSinceDing++; }
+                    // attribute to the mob that just died (best-XP-mobs); ignore player/pet deaths
+                    if (_lastSlain != null && (dt - _lastSlainTime).TotalSeconds <= 4
+                        && !IsPlayerToken(_lastSlain) && !IsPetToken(_lastSlain))
+                    {
+                        if (!XpByMob.TryGetValue(_lastSlain, out var xm)) { xm = new XpMobStat { Mob = _lastSlain }; XpByMob[_lastSlain] = xm; }
+                        xm.Kills++; xm.TotalPct += pct;
+                    }
+                }
                 return true;
             }
 
             // ---- kills ----
-            if (RxSlainBy.IsMatch(msg) || RxYouSlain.IsMatch(msg)) { Kills++; return true; }
+            var slain = RxYouSlain.Match(msg);
+            if (!slain.Success) slain = RxSlainBy.Match(msg);
+            if (slain.Success) { Kills++; _lastSlain = slain.Groups["mob"].Value; _lastSlainTime = dt; return true; }
 
             // ---- ability points ----
             var aa = RxAa.Match(msg);
@@ -510,7 +560,24 @@ namespace EqlMetrics.Core
         public double XpPerHour => TotalXpPct / SessionHours;
         public double KillsPerHour => Kills / SessionHours;
         public double AaPerHour => AbilityPoints / SessionHours;
-        public double? HoursToLevel => XpPerHour > 0 ? 100.0 / XpPerHour : (double?)null;
+
+        // ---- leveling reads (accurate only after the first ding baselines the level bar) ----
+        public bool AwaitingLevelBaseline => !LevelBaselined;
+        public int? Level => CurrentLevel;
+        public double LevelRemainingPct => Math.Max(0, 100 - LevelProgressPct);
+
+        // hours elapsed within the current level (since the last ding)
+        private double HoursSinceDing => LevelAnchorTime.HasValue
+            ? Math.Max(1.0 / 3600, (LastTime - LevelAnchorTime.Value).TotalHours) : 0;
+        // %/hr measured within the current level — the "appropriate" rate once baselined
+        public double? LevelRatePerHour => (LevelBaselined && LevelProgressPct > 0) ? LevelProgressPct / HoursSinceDing : (double?)null;
+        public double? HoursToLevel => (LevelRatePerHour is double r && r > 0) ? LevelRemainingPct / r : (double?)null;
+
+        public double? AvgXpPerKill => (LevelBaselined && XpEventsSinceDing > 0) ? LevelProgressPct / XpEventsSinceDing : (double?)null;
+        public double? KillsToLevel => (AvgXpPerKill is double a && a > 0) ? LevelRemainingPct / a : (double?)null;
+
+        /// <summary>Mobs ranked by average XP per kill (best first).</summary>
+        public IEnumerable<XpMobStat> BestXpMobs => XpByMob.Values.OrderByDescending(m => m.AvgPct);
 
         // biggest single events (session)
         public AbilityStat? BiggestMelee => Session.BiggestMelee;

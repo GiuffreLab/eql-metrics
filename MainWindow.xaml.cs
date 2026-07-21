@@ -224,7 +224,10 @@ namespace EqlMetrics
             CoreRates.Children.Add(Chip("IN DPS", s.IncomingDpsMe.ToString("0"), "", DmgIn));
             if (s.SwingsAtYou > 0) CoreRates.Children.Add(Chip("AVOID", s.AvoidedPct.ToString("0") + "%", "", Melee));
             CoreRates.Children.Add(Chip("ENEMY HPS", s.EnemyHps.ToString("0"), "", Nuke));
-            CoreRates.Children.Add(Chip("XP/HR", s.XpPerHour.ToString("0.0") + "%", "", Xp));
+            string xpSub = s.Level.HasValue
+                ? (s.AwaitingLevelBaseline ? $"L{s.Level}" : $"L{s.Level} · {s.LevelProgressPct:0}%")
+                : "";
+            CoreRates.Children.Add(Chip("XP/HR", s.XpPerHour.ToString("0.0") + "%", xpSub, Xp));
         }
 
         private static string WhoFor(SessionStats s, BuffTracker.FadeEvent f) => f.Category switch
@@ -443,13 +446,46 @@ namespace EqlMetrics
             cons.Children.Add(StatBox("Enemy heal", s.EnemyHps.ToString("0.0"), Nuke));
             p.Children.Add(cons);
 
+            // ---- XP & LEVELING ----
+            p.Children.Add(SectionHeader(s.Level.HasValue ? $"XP & LEVELING  ·  LEVEL {s.Level}" : "XP & LEVELING"));
+            var xpg = new WrapPanel();
+            void X(string k, string v, Brush b) => xpg.Children.Add(StatBox(k, v, b));
+            if (s.AwaitingLevelBaseline)
+            {
+                // No ding seen yet → we can't know how far into the level we are, so hold
+                // the per-level projections until the first "Welcome to level N!" baselines us.
+                X("Into level", "—", Xp);
+                X("To level", "waiting", Dim);
+                X("XP/hr", s.XpPerHour.ToString("0.0") + "%", Xp);
+                X("Kills/hr", s.KillsPerHour.ToString("0"), Text);
+                p.Children.Add(xpg);
+                p.Children.Add(Hint("Waiting for a level-up to baseline — projections start after your next \"Welcome to level N!\""));
+            }
+            else
+            {
+                X("Into level", s.LevelProgressPct.ToString("0.0") + "%", Xp);
+                X("To level", s.HoursToLevel.HasValue ? FmtHours(s.HoursToLevel.Value) : "—", Text);
+                X("Kills to lvl", s.KillsToLevel.HasValue ? s.KillsToLevel.Value.ToString("0") : "—", Text);
+                X("XP/hr", s.XpPerHour.ToString("0.0") + "%", Xp);
+                X("%/kill", s.AvgXpPerKill.HasValue ? s.AvgXpPerKill.Value.ToString("0.00") + "%" : "—", Xp);
+                X("Kills/hr", s.KillsPerHour.ToString("0"), Text);
+                p.Children.Add(xpg);
+
+                var bestMobs = s.BestXpMobs.Take(4).ToList();
+                if (bestMobs.Count > 0)
+                {
+                    p.Children.Add(SectionHeader("BEST XP MOBS  ·  since last level"));
+                    double topAvg = Math.Max(0.0001, bestMobs[0].AvgPct);
+                    foreach (var m in bestMobs)
+                        p.Children.Add(Row(m.Mob, $"x{m.Kills} killed", m.AvgPct.ToString("0.00") + "%", "per kill",
+                            m.AvgPct / topAvg, Xp, Xp));
+                }
+            }
+
             p.Children.Add(SectionHeader("SESSION"));
             long bestHit = s.Combatants.Where(c => c.IsPlayer).SelectMany(c => c.Abilities.Values).Select(a => a.Max).DefaultIfEmpty(0).Max();
             var grid = new WrapPanel();
             void G(string k, string v, Brush b) => grid.Children.Add(StatBox(k, v, b));
-            G("Kills/hr", s.KillsPerHour.ToString("0"), Text);
-            G("XP/hr", s.XpPerHour.ToString("0.0") + "%", Xp);
-            G("To level", s.HoursToLevel.HasValue ? FmtHours(s.HoursToLevel.Value) : "—", Text);
             G("AA gained", s.AbilityPoints.ToString("0"), Xp);
             G("AA/hr", s.AaPerHour.ToString("0.0"), Xp);
             G("Coin/hr", s.CoinPerHour.ToString("0.0") + "p", Gold);
