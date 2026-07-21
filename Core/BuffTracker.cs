@@ -68,6 +68,23 @@ namespace EqlMetrics.Core
 
         public void Fail(string spell) => _active.Remove(BaseName(spell));
 
+        /// <summary>Did we see "You begin casting &lt;spell&gt;" within the last <paramref name="windowSec"/> seconds?
+        /// Used to confirm a pet-buff landing ("&lt;pet&gt; goes berserk.") came from YOUR cast, not someone else's.</summary>
+        public bool WasCastRecently(string spell, DateTime now, double windowSec)
+            => _lastCast.TryGetValue(BaseName(spell), out var t)
+               && (now - t).TotalSeconds >= 0 && (now - t).TotalSeconds <= windowSec;
+
+        /// <summary>A buff you cast landed on your pet (or another target). Activates it and fires a "gained" event.</summary>
+        public void PetApply(string spell, double durationSec, string target, DateTime t)
+        {
+            string bn = BaseName(spell);
+            _lastCast[bn] = t;
+            Categories[bn] = BuffCat.Pet;
+            double? eff = EffectiveDuration(bn) ?? (durationSec > 0 ? durationSec : (double?)null);
+            _active[bn] = new Buff { Name = bn, Category = BuffCat.Pet, Start = t, Duration = eff, Target = target ?? "" };
+            RecordGain(bn, BuffCat.Pet, target ?? "", t);
+        }
+
         // observed (learned) duration includes focus/AA extension, so it wins once we trust it;
         // the wiki base seeds the timer beforehand and bounds the learned value against mis-pairs.
         private double? EffectiveDuration(string bn)

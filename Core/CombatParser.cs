@@ -20,8 +20,44 @@ namespace EqlMetrics.Core
         public double AvgPct => Kills > 0 ? TotalPct / Kills : 0;
     }
 
-    /// <summary>A "notable" skill attempt (e.g. Backstab) by the player — hit, crit, or miss — for the skill-proc flash.</summary>
-    public struct SkillProc { public string Skill; public long Damage; public bool Crit; public bool Miss; public string Target; public DateTime Time; }
+    /// <summary>A "notable" skill attempt (e.g. Backstab) by the player or pet — hit, crit, or miss — for the skill-proc flash.</summary>
+    public struct SkillProc { public string Skill; public long Damage; public bool Crit; public bool Miss; public bool Pet; public string Target; public DateTime Time; }
+
+    /// <summary>
+    /// A player ability on a long reuse timer that a melee proc shortens. SK Harm Touch (shortened by
+    /// Reave) and Paladin Lay on Hands (shortened by Smite) are the same shape: no "ready" line exists,
+    /// so we time it off the player's "You begin casting &lt;name&gt;…" line and knock a fixed amount off
+    /// per qualifying proc that lands while it's still cooling down (reductions don't bank once it's up).
+    /// </summary>
+    public sealed class ProcCooldown
+    {
+        public readonly string Name;          // display, e.g. "Harm Touch"
+        public readonly string CastPrefix;    // gate on this so incoming mob casts don't trip it
+        public readonly string ReducerSkill;  // melee proc that shortens it: "Reave" / "Smite"
+        public readonly double BaseSec;       // full reuse (1200 / 900)
+        public readonly double ReductionSec;  // shaved per proc (60)
+
+        public DateTime? CastAt;              // identity of the current cooldown cycle (real cast, or adopted on calibration)
+        public DateTime? ReadyAt;             // when it comes back up — the source of truth
+        public int Reductions;                // qualifying procs applied this cycle (for the "-Nm" display)
+        public bool Calibrated;               // an exact "again in X" line has snapped this cycle to the game's clock
+
+        public ProcCooldown(string name, string castPrefix, string reducerSkill, double baseSec, double reductionSec)
+        { Name = name; CastPrefix = castPrefix; ReducerSkill = reducerSkill; BaseSec = baseSec; ReductionSec = reductionSec; }
+
+        public bool Tracking => ReadyAt.HasValue;
+        public double ReductionTotalSec => ReductionSec * Reductions;
+        public double? SecondsRemaining(DateTime asOf) => ReadyAt is DateTime r ? Math.Max(0, (r - asOf).TotalSeconds) : (double?)null;
+        public bool IsReady(DateTime asOf) => ReadyAt is DateTime r && asOf >= r;
+
+        // Player activated it: start a fresh cycle at the full base reuse.
+        public void Cast(DateTime dt) { CastAt = dt; ReadyAt = dt.AddSeconds(BaseSec); Reductions = 0; Calibrated = false; }
+        // A qualifying proc landed: shave one interval, but only while still cooling down (no banking).
+        public void ProcLanded(DateTime dt) { if (ReadyAt is DateTime r && dt < r) { ReadyAt = r.AddSeconds(-ReductionSec); Reductions++; } }
+        // Exact remaining from the game's "You can use the ability X again in M:SS" line — snap the timer to it.
+        public void Calibrate(DateTime dt, double remainingSec) { ReadyAt = dt.AddSeconds(remainingSec); CastAt ??= dt; Calibrated = true; }
+        public void Reset() { CastAt = null; ReadyAt = null; Reductions = 0; Calibrated = false; }
+    }
 
     /// <summary>One landed AoE-capable melee hit (Cleave, or Kick=round kick) by the player or pet. A burst
     /// of these across 2+ targets in the same window is the AoE ability firing (single-target = a normal swing).</summary>
@@ -36,6 +72,7 @@ namespace EqlMetrics.Core
     {
         public string PlayerName = "You";
         public string PetName = "";
+        public bool PetAutoDetectEnabled = true;   // learn pet name from heals too (turn off if you group-heal others)
         public double EncounterTimeoutSec = 10.0;
         public const int MaxEncounters = 20;
 
@@ -64,8 +101,20 @@ namespace EqlMetrics.Core
         private DateTime _lastSlainTime;
         public readonly List<LootEntry> Loot = new();
         public readonly List<StealthEvent> StealthEvents = new();   // hide/sneak skill-check results
-        public DateTime? QuickBuffCastAt;                            // last "You activate Quick Buff." (10-min cooldown)
-        public const double QuickBuffCooldownSec = 600;
+        public const double QuickBuffCooldownSec = 600;             // kept for reference; Quick Buff is a ProcCooldown below
+
+        // Tracked cooldowns, all sharing one mechanic: estimate off the player's activation line, and snap to the
+        // exact "you can use X again in M:SS" readout whenever the player taps early. Quick Buff (fixed 10-min, no
+        // reducer), SK Harm Touch (Reave shaves 60s, 20-min), Paladin Lay on Hands (Smite shaves 60s, 15-min).
+        public readonly ProcCooldown QuickBuff = new("Quick Buff", "You activate Quick Buff", "", 600, 0);
+        public readonly ProcCooldown HarmTouch = new("Harm Touch", "You begin casting Harm Touch", "Reave", 1200, 60);
+        public readonly ProcCooldown LayOnHands = new("Lay on Hands", "You begin casting Lay on Hands", "Smite", 900, 60);
+        public IEnumerable<ProcCooldown> ProcCooldowns { get { yield return HarmTouch; yield return LayOnHands; yield return QuickBuff; } }
+        public DateTime? QuickBuffCastAt => QuickBuff.CastAt;        // delegating (kept for existing callers)
+
+        // Magic riders that fold into their melee proc's combined popup (Reave→Reaving Strike, Smite→Smiting Strike).
+        private static readonly Dictionary<string, string> RiderToProc = new(StringComparer.OrdinalIgnoreCase)
+        { ["Reaving Strike"] = "Reave", ["Smiting Strike"] = "Smite" };
 
         public readonly List<SkillProc> SkillProcs = new();         // landed notable skills (backstab, ...)
         public readonly List<CleaveHit> CleaveHits = new();         // player/pet AoE-melee hits (grouped into AoE flashes)
@@ -76,6 +125,9 @@ namespace EqlMetrics.Core
         // (single = normal swing, silent); Kick/Strike are monk specials shown every activation. The UI
         // (FinalizeCleave) decides which, and folds in double/triple attacks and multi-target splashes.
         private static readonly HashSet<string> BurstSkills = new(StringComparer.OrdinalIgnoreCase) { "Cleave", "Kick", "Strike" };
+        // Auto-attack procs by the player that get a hits-only popup (misses would spam) with double/triple
+        // grouping. Reave/Smite are here too (they additionally shorten a cooldown); Frenzy is just a proc.
+        private static readonly HashSet<string> AutoProcSkills = new(StringComparer.OrdinalIgnoreCase) { "Reave", "Smite", "Frenzy" };
 
         private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
@@ -85,9 +137,9 @@ namespace EqlMetrics.Core
             if (StealthEvents.Count > 50) StealthEvents.RemoveAt(0);
         }
 
-        public void RecordSkillProc(string skill, long dmg, bool crit, string target, DateTime dt, bool miss = false)
+        public void RecordSkillProc(string skill, long dmg, bool crit, string target, DateTime dt, bool miss = false, bool pet = false)
         {
-            SkillProcs.Add(new SkillProc { Skill = skill, Damage = dmg, Crit = crit, Miss = miss, Target = target ?? "", Time = dt });
+            SkillProcs.Add(new SkillProc { Skill = skill, Damage = dmg, Crit = crit, Miss = miss, Pet = pet, Target = target ?? "", Time = dt });
             if (SkillProcs.Count > 50) SkillProcs.RemoveAt(0);
         }
 
@@ -101,6 +153,41 @@ namespace EqlMetrics.Core
         {
             MendEvents.Add(dt);
             if (MendEvents.Count > 50) MendEvents.RemoveAt(0);
+        }
+
+        /// <summary>True once the pet name was learned from the log (chatter/heal), vs a manual/settings value.</summary>
+        public bool PetAutoDetected;
+        // Learn/refresh the current pet name from the log. Summoned pets get a fresh random name each resummon,
+        // so this updates whenever a new pet acknowledges a command or is healed by you.
+        private void SetPetFromLog(string name)
+        {
+            name = (name ?? "").Trim();
+            if (name.Length == 0 || IsPlayerToken(name)) return;
+            if (!string.Equals(name, PetName, StringComparison.OrdinalIgnoreCase))
+            {
+                PetName = name;
+                PetAutoDetected = true;
+            }
+        }
+
+        // A Reave/Smite activation logs as two lines at the same instant: the physical hit and its magic
+        // rider (Reaving Strike / Smiting Strike). Fold the rider's damage into the proc we just recorded
+        // so the popup shows the true combined hit. The breakdown still lists both separately (RouteOutgoing
+        // already ran for each).
+        private void FoldRiderIntoProc(string parentSkill, long magic, bool crit, DateTime dt, bool pet)
+        {
+            for (int i = SkillProcs.Count - 1; i >= 0; i--)
+            {
+                var p = SkillProcs[i];
+                if ((dt - p.Time).TotalSeconds > 2) break;   // riders land the same second; stop at older procs
+                if (string.Equals(p.Skill, parentSkill, StringComparison.OrdinalIgnoreCase) && p.Pet == pet && !p.Miss)
+                {
+                    p.Damage += magic;
+                    p.Crit = p.Crit || crit;
+                    SkillProcs[i] = p;
+                    return;
+                }
+            }
         }
 
         public SessionStats() { Session = new CombatAggregate(this); }
@@ -120,8 +207,11 @@ namespace EqlMetrics.Core
             ["bash"]="Bash", ["kick"]="Kick", ["backstab"]="Backstab", ["bite"]="Bite",
             ["claw"]="Claw", ["gore"]="Gore", ["sting"]="Sting", ["smash"]="Crushing",
             ["slam"]="Slam", ["punch"]="Hand to Hand", ["maul"]="Maul", ["rend"]="Rend",
-            ["slice"]="Slashing", ["cleave"]="Cleave", ["chomp"]="Chomp", ["frenzies on"]="Frenzy",
-            ["strike"]="Strike"   // monk Tiger Claw / Eagle Strike / Dragon Punch all log as "strike"
+            ["slice"]="Slashing", ["cleave"]="Cleave", ["chomp"]="Chomp",
+            ["frenzy on"]="Frenzy", ["frenzies on"]="Frenzy",   // Berserker Frenzy: you "frenzy on" / mobs "frenzies on"
+            ["strike"]="Strike",  // monk Tiger Claw / Eagle Strike / Dragon Punch all log as "strike"
+            ["reave"]="Reave",    // SK Reave proc (its magic rider "Reaving Strike" is tracked separately as a spell)
+            ["smite"]="Smite"     // Paladin Smite proc (magic rider "Smiting Strike"; note the castable Smite spell is a separate nuke)
         };
         private static readonly string VerbAlt = BuildVerbAlt();
         private static string BuildVerbAlt()
@@ -151,6 +241,17 @@ namespace EqlMetrics.Core
         private static readonly Regex RxMote = new(@"Mote of (?<tier>.+?) Potential", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex RxXp = new(@"^You gain (?:party )?experience!(?: \((?<pct>[\d.]+)%\))?", RegexOptions.Compiled);
         private static readonly Regex RxLevel = new(@"^You have gained a level! Welcome to level (?<lvl>\d+)!", RegexOptions.Compiled);
+        // The game's reactive "you pressed it too early" readout — an exact remaining cooldown we snap our timer to.
+        private static readonly Regex RxAbilityReady = new(@"^You can use the ability (?<name>.+?) again in (?<m>\d+) minute\(s\) (?<s>\d+) seconds\.$", RegexOptions.Compiled);
+        // Your damage shield reflecting onto an attacker: "<mob> is pierced by YOUR thorns for N points of non-melee damage."
+        // The verb (pierced/burned/…) and shield noun (thorns/flames/…) vary by shield type; "YOUR" marks it as yours.
+        private static readonly Regex RxDmgShield = new(@"^(?<t>.+?) is [A-Za-z]+ by YOUR (?<shield>.+?) for (?<d>\d+) points? of non-melee damage\.$", RegexOptions.Compiled);
+        // Pet auto-detect: a summoned/charmed pet's name changes every resummon, so we learn the current one from
+        // the log. EQL pets address you as "Master" ("<pet> told you, 'Attacking <target> Master.'") — frequent —
+        // or acknowledge a command ("<pet> says, 'As you wish, oh great one.'"). Either "says," or "told you," is used.
+        private static readonly Regex RxPetChatter = new(
+            @"^(?<pet>[A-Za-z`']+) (?:says|told you), '(?:[^']*\bMaster\b[^']*|As you wish, oh great one\.)'$",
+            RegexOptions.Compiled);
         private static readonly Regex RxSlainBy = new(@"^(?<mob>.+?) has been slain by .+?!$", RegexOptions.Compiled);
         private static readonly Regex RxYouSlain = new(@"^You have slain (?<mob>.+?)!$", RegexOptions.Compiled);
         private static readonly Regex RxAa = new(@"^You have gained (?:an|(?<n>\d+)) ability points?!", RegexOptions.Compiled);
@@ -181,7 +282,7 @@ namespace EqlMetrics.Core
             SkillProcs.Clear();
             CleaveHits.Clear();
             MendEvents.Clear();
-            QuickBuffCastAt = null;
+            QuickBuff.Reset(); HarmTouch.Reset(); LayOnHands.Reset();
         }
 
         public static bool TryParseTime(string ts, out DateTime dt)
@@ -262,6 +363,17 @@ namespace EqlMetrics.Core
             Session.IncomingMiss(dt);
             Ensure(dt).Agg.IncomingMiss(dt);
         }
+        // Your damage shield reflect. It's real damage you deal, so route it as a player ability (kind = Shield)
+        // — that puts it in your damage totals, DPS, and the breakdown. The separate DamageShieldReflect tally
+        // feeds the dedicated reflect box (its total mirrors the ability, but it also tracks the last hit + rate).
+        private void RouteDamageShield(long dmg, string shield, string target, DateTime dt)
+        {
+            string ability = string.IsNullOrEmpty(shield) ? "Damage Shield"
+                : char.ToUpperInvariant(shield[0]) + shield.Substring(1);   // e.g. "thorns" -> "Thorns"
+            RouteOutgoing("You", ability, DamageKind.Shield, dmg, false, target, dt);
+            Session.DamageShieldReflect(dmg, shield, dt);
+            Ensure(dt).Agg.DamageShieldReflect(dmg, shield, dt);
+        }
         private void RouteStun(DateTime dt)
         {
             Session.Stunned(dt);
@@ -282,14 +394,33 @@ namespace EqlMetrics.Core
 
             Session.MarkTime(dt);   // session clock spans all lines
 
+            // ---- pet auto-detect (a summoned pet's name changes each summon; learn it from "Master" chatter) ----
+            var pchat = RxPetChatter.Match(msg);
+            if (pchat.Success) { SetPetFromLog(pchat.Groups["pet"].Value); return true; }
+
             // ---- stealth skill checks (hide / sneak, success + failure) ----
             if (msg == "You have hidden yourself from view.") { RecordStealth(StealthKind.Hide, dt); return true; }
             if (msg == "You are as quiet as a cat stalking its prey.") { RecordStealth(StealthKind.Sneak, dt); return true; }
             if (msg == "You failed to hide yourself.") { RecordStealth(StealthKind.HideFail, dt); return true; }
             if (msg == "You are as quiet as a herd of running elephants.") { RecordStealth(StealthKind.SneakFail, dt); return true; }
 
-            // ---- Quick Buff activation (no "ready" line exists, so we time the 10-min cooldown ourselves) ----
-            if (msg == "You activate Quick Buff.") { QuickBuffCastAt = dt; return true; }
+            // ---- Cooldown activations (Quick Buff, SK Harm Touch, Paladin Lay on Hands). Time the reuse off
+            //      the player's own activation line; the prefixes ("You activate…" / "You begin casting <name>")
+            //      exclude the many incoming mob casts (especially Lay on Hands self-heals). Rank suffix is ignored. ----
+            foreach (var cd in ProcCooldowns)
+                if (msg.StartsWith(cd.CastPrefix, StringComparison.Ordinal)) { cd.Cast(dt); return true; }
+
+            // ---- Cooldown calibration: pressing an ability that's still cooling down prints its EXACT
+            //      remaining time. Snap our estimate to it (fixes drift, or starts tracking one we never saw cast). ----
+            var ar = RxAbilityReady.Match(msg);
+            if (ar.Success)
+            {
+                double rem = int.Parse(ar.Groups["m"].Value, Inv) * 60 + int.Parse(ar.Groups["s"].Value, Inv);
+                string abil = ar.Groups["name"].Value.Trim();
+                foreach (var cd in ProcCooldowns)
+                    if (abil.StartsWith(cd.Name, StringComparison.OrdinalIgnoreCase)) { cd.Calibrate(dt, rem); break; }
+                return true;
+            }
 
             // ---- Mend (monk self-heal; the log gives no amount, just that it fired) ----
             if (msg == "You mend your wounds and heal some damage.") { RecordMend(dt); return true; }
@@ -299,6 +430,14 @@ namespace EqlMetrics.Core
             if (av.Success) { RouteAvoidByYou(av.Groups["how"].Value.ToLowerInvariant(), dt); return true; }
             if (msg == "You are stunned!") { RouteStun(dt); return true; }
 
+            // ---- your damage shield reflecting onto attackers ("X is pierced by YOUR thorns for N...") ----
+            var dsm = RxDmgShield.Match(msg);
+            if (dsm.Success)
+            {
+                RouteDamageShield(long.Parse(dsm.Groups["d"].Value, Inv), dsm.Groups["shield"].Value.Trim(), dsm.Groups["t"].Value.Trim(), dt);
+                return true;
+            }
+
             // ---- melee ----
             var mm = RxMelee.Match(msg);
             if (mm.Success)
@@ -307,12 +446,21 @@ namespace EqlMetrics.Core
                 long d = long.Parse(mm.Groups["d"].Value, Inv);
                 bool crit = mm.Groups["mod"].Value.Equals("Critical", StringComparison.OrdinalIgnoreCase);
                 string skill = SkillFor(mm.Groups["verb"].Value);
+                bool byPlayer = IsPlayerToken(a), byPet = IsPetToken(a);
                 if (IsPlayerToken(t)) RouteIncomingMe(d, a, skill, DamageKind.Melee, dt);
                 else if (IsPetToken(t)) RouteIncomingPet(d, a, skill, DamageKind.Melee, dt);
                 else RouteOutgoing(a, skill, DamageKind.Melee, d, crit, t, dt);
-                if (IsPlayerToken(a) && NotableSkills.Contains(skill)) RecordSkillProc(skill, d, crit, t, dt);
+                // Backstab pops for you OR your pet (a warrior/rogue pet can backstab).
+                if ((byPlayer || byPet) && NotableSkills.Contains(skill)) RecordSkillProc(skill, d, crit, t, dt, pet: byPet);
                 // cleave / kick / strike hits by you or your pet feed the per-activation burst flash (grouped in the UI)
-                if (BurstSkills.Contains(skill) && (IsPlayerToken(a) || IsPetToken(a))) RecordCleaveHit(a, skill, d, crit, t, dt);
+                if (BurstSkills.Contains(skill) && (byPlayer || byPet)) RecordCleaveHit(a, skill, d, crit, t, dt);
+                // Auto-attack procs (Reave / Smite / Frenzy) pop for you OR your pet — hits only, since they whiff
+                // constantly. NotifySkills merges same-instant multi-hits into "DOUBLE/TRIPLE". Only YOUR Reave/Smite
+                // shorten your cooldown (a pet's don't); the magic rider folds into whichever popup it belongs to.
+                if (byPlayer)
+                    foreach (var cd in ProcCooldowns)
+                        if (string.Equals(cd.ReducerSkill, skill, StringComparison.OrdinalIgnoreCase)) cd.ProcLanded(dt);
+                if ((byPlayer || byPet) && AutoProcSkills.Contains(skill)) RecordSkillProc(skill, d, crit, t, dt, pet: byPet);
                 return true;
             }
 
@@ -347,6 +495,13 @@ namespace EqlMetrics.Core
                 if (IsPlayerToken(t)) RouteIncomingMe(d, a, spell, DamageKind.Nuke, dt);
                 else if (IsPetToken(t)) RouteIncomingPet(d, a, spell, DamageKind.Nuke, dt);
                 else RouteOutgoing(a, spell, DamageKind.Nuke, d, crit, t, dt);
+                // Harm Touch (SK) lands as unresistable magic, not a melee swing — surface its damage as a
+                // skill-proc flash the way Backstab does. Normalize the rank suffix (II/III/…) to "Harm Touch".
+                if (IsPlayerToken(a) && spell.StartsWith("Harm Touch", StringComparison.OrdinalIgnoreCase))
+                    RecordSkillProc("Harm Touch", d, crit, t, dt);
+                // Reave/Smite magic riders (Reaving Strike / Smiting Strike) fold into their melee proc's popup (yours or pet's).
+                if ((IsPlayerToken(a) || IsPetToken(a)) && RiderToProc.TryGetValue(spell, out var parentSkill))
+                    FoldRiderIntoProc(parentSkill, d, crit, dt, pet: IsPetToken(a));
                 return true;
             }
 
@@ -379,7 +534,14 @@ namespace EqlMetrics.Core
                 string healer = hl.Groups["healer"].Value.Trim();
                 long eff = long.Parse(hl.Groups["amt"].Value, Inv);
                 long pot = hl.Groups["pot"].Success ? long.Parse(hl.Groups["pot"].Value, Inv) : eff;
-                if (IsPlayerToken(healer)) RoutePlayerHeal(hl.Groups["spell"].Value.Trim(), eff, pot, dt);
+                if (IsPlayerToken(healer))
+                {
+                    // You heal your pet by name — a strong pet-name signal between command acks (assumes you're not
+                    // healing another ally; grouped healers can turn this off via the "auto-detect pet" setting).
+                    string htgt = hl.Groups["t"].Value.Trim();
+                    if (PetAutoDetectEnabled && !IsPlayerToken(htgt)) SetPetFromLog(htgt);
+                    RoutePlayerHeal(hl.Groups["spell"].Value.Trim(), eff, pot, dt);
+                }
                 else RouteNpHeal(healer, hl.Groups["t"].Value.Trim(), eff, dt);
                 return true;
             }
@@ -483,6 +645,20 @@ namespace EqlMetrics.Core
                 return true;
             }
 
+            // ---- pet-buff landings ("<pet> goes berserk." = Burnout on your pet). Only test buffs YOU cast in the
+            //      last few seconds (cheap dictionary gate), which also confirms the named target IS your pet. ----
+            foreach (var od in BuffData.OtherApply)
+            {
+                if (!Buffs.WasCastRecently(od.Spell, dt, 12)) continue;
+                var om = od.Match.Match(msg);
+                if (!om.Success) continue;
+                string tgt = om.Groups["t"].Value.Trim();
+                if (tgt.Length == 0 || IsPlayerToken(tgt)) continue;
+                SetPetFromLog(tgt);                                   // your just-cast pet buff landed here -> that's your pet
+                Buffs.PetApply(od.Spell, od.DurationSec, tgt, dt);
+                return true;
+            }
+
             return false;
         }
 
@@ -552,6 +728,14 @@ namespace EqlMetrics.Core
         public double AvoidedPct => Session.AvoidedPct;
         public double ActiveAvoidPct => Session.ActiveAvoidPct;
         public long StunsTaken => Session.StunsTaken;
+
+        // ---- damage shield reflect ----
+        public long DamageShieldTotal => Session.DamageShieldTotal;
+        public long DamageShieldHits => Session.DamageShieldHits;
+        public double DamageShieldDps => Session.DamageShieldDps;
+        public long BiggestDamageShield => Session.BiggestDamageShield;
+        public long LastDamageShield => Session.LastReflect;
+        public string PrimaryShieldName => Session.PrimaryShieldName;
         public IEnumerable<HealStat> HealsByAmount => Session.HealsByAmount;
         public double OverhealPct => Session.OverhealPct;
 
@@ -578,6 +762,15 @@ namespace EqlMetrics.Core
 
         /// <summary>Mobs ranked by average XP per kill (best first).</summary>
         public IEnumerable<XpMobStat> BestXpMobs => XpByMob.Values.OrderByDescending(m => m.AvgPct);
+
+        // ---- proc-shortened cooldown reads (delegate to the trackers; Harm Touch names kept for the UI/harness) ----
+        public bool HarmTouchTracking => HarmTouch.Tracking;
+        public DateTime? HarmTouchCastAt => HarmTouch.CastAt;
+        public int ReavesSinceHarmTouch => HarmTouch.Reductions;
+        public DateTime? HarmTouchReadyAt => HarmTouch.ReadyAt;
+        public double? HarmTouchSecondsRemaining => HarmTouch.SecondsRemaining(LastTime);
+        public bool HarmTouchReady => HarmTouch.IsReady(LastTime);
+        public double HarmTouchReaveReduction => HarmTouch.ReductionTotalSec;
 
         // biggest single events (session)
         public AbilityStat? BiggestMelee => Session.BiggestMelee;

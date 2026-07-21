@@ -56,7 +56,7 @@
         <Border.Background>
             <SolidColorBrush x:Name="Backdrop" Color="#0B0D11" Opacity="0.42"/>
         </Border.Background>
-        <StackPanel>
+        <StackPanel x:Name="Shell">
 
             <!-- ===== title bar ===== -->
             <Border x:Name="TitleBar" CornerRadius="12,12,0,0" Padding="9,7" MouseLeftButtonDown="TitleBar_MouseDown"
@@ -94,25 +94,35 @@
                 </StackPanel>
             </Border>
 
-            <!-- ===== core strip (always visible) ===== -->
-            <StackPanel Margin="13,10,13,4">
-                <DockPanel Margin="0,0,0,5">
-                    <TextBlock x:Name="EncounterName" Text="no fight yet" Foreground="#8A97AB" FontSize="11" VerticalAlignment="Center"/>
-                    <TextBlock x:Name="EncounterTime" DockPanel.Dock="Right" Text="" Foreground="#8A97AB" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center"/>
-                </DockPanel>
-                <StackPanel Orientation="Horizontal">
-                    <TextBlock x:Name="BigDps" Text="0" Foreground="#EAF3FF" FontSize="36" FontWeight="Bold"/>
-                    <TextBlock Text="DPS" Foreground="#8A97AB" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Bottom" Margin="7,0,0,7"/>
-                    <TextBlock x:Name="DpsSplit" Text="" Foreground="#8A97AB" FontSize="11" VerticalAlignment="Bottom" Margin="10,0,0,8"/>
+            <!-- ===== minimized content, as moveable blocks =====
+                 Vertical mode: blocks live stacked in VMinHost (default, unchanged look).
+                 Horizontal mode: code moves the same blocks into HMinHost (a row). -->
+            <StackPanel x:Name="VMinHost">
+                <!-- head: encounter line + big DPS -->
+                <StackPanel x:Name="HeadBlock" Margin="13,10,13,0">
+                    <DockPanel Margin="0,0,0,5">
+                        <TextBlock x:Name="EncounterName" Text="no fight yet" Foreground="#8A97AB" FontSize="11" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="EncounterTime" DockPanel.Dock="Right" Text="" Foreground="#8A97AB" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                    </DockPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock x:Name="BigDps" Text="0" Foreground="#EAF3FF" FontSize="36" FontWeight="Bold"/>
+                        <TextBlock Text="DPS" Foreground="#8A97AB" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Bottom" Margin="7,0,0,7"/>
+                        <TextBlock x:Name="DpsSplit" Text="" Foreground="#8A97AB" FontSize="11" VerticalAlignment="Bottom" Margin="10,0,0,8"/>
+                    </StackPanel>
                 </StackPanel>
-                <WrapPanel x:Name="CoreRates" Margin="0,6,0,0"/>
+                <!-- rate chips + cooldown boxes -->
+                <StackPanel x:Name="RatesBlock" Margin="13,6,13,4">
+                    <WrapPanel x:Name="CoreRates"/>
+                </StackPanel>
+                <!-- biggest hits (minimized only) -->
+                <StackPanel x:Name="BiggestStrip" Margin="13,2,13,6">
+                    <TextBlock Text="BIGGEST HITS" Foreground="#8B8D92" FontSize="10" FontWeight="Bold" Margin="0,4,0,6"/>
+                    <WrapPanel x:Name="BiggestPanel"/>
+                </StackPanel>
             </StackPanel>
 
-            <!-- ===== biggest hits (minimized only) ===== -->
-            <StackPanel x:Name="BiggestStrip" Margin="13,2,13,6">
-                <TextBlock Text="BIGGEST HITS" Foreground="#8B8D92" FontSize="10" FontWeight="Bold" Margin="0,4,0,6"/>
-                <WrapPanel x:Name="BiggestPanel"/>
-            </StackPanel>
+            <!-- horizontal minimized host — blocks flow into this row when layout = horizontal -->
+            <WrapPanel x:Name="HMinHost" Orientation="Horizontal" Visibility="Collapsed" Margin="8,4,8,2"/>
 
             <!-- ===== maximized (tabs) ===== -->
             <StackPanel x:Name="MaxPanel" Margin="13,2,13,4">
@@ -134,7 +144,7 @@
             <!-- buff/debuff notices now use the center-screen CenterFlash instead of a bottom tray -->
 
             <!-- ===== footer ===== -->
-            <Border Padding="13,7" BorderBrush="#2B313A" BorderThickness="0,1,0,0" CornerRadius="0,0,12,12">
+            <Border x:Name="Footer" Padding="13,7" BorderBrush="#2B313A" BorderThickness="0,1,0,0" CornerRadius="0,0,12,12">
                 <DockPanel>
                     <TextBlock x:Name="StatusText" Text="no log loaded" Foreground="#6A768A" FontSize="10" VerticalAlignment="Center"/>
                     <TextBlock x:Name="SessionTimer" DockPanel.Dock="Right" Text="00:00:00" Foreground="#8A97AB" FontSize="10" HorizontalAlignment="Right" VerticalAlignment="Center"/>

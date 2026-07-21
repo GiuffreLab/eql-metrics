@@ -50,6 +50,7 @@ namespace EqlMetrics
             T("Dmg taken", a.DamageTaken.ToString("0"), EqlUi.DmgIn);
             if (a.HasPet) T("Pet taken", a.DamageTakenPet.ToString("0"), EqlUi.DmgIn);
             T("Biggest taken", a.BiggestHitTaken.ToString("0"), EqlUi.DmgIn);
+            if (a.DamageShieldHits > 0) T("Dmg shield", a.DamageShieldTotal.ToString("0"), EqlUi.Thorn);
             T("Enemy HPS", a.EnemyHps.ToString("0.0"), EqlUi.Nuke);
             T("Enemies", a.EnemyNames.Count.ToString("0"), EqlUi.Text);
             root.Children.Add(tiles);

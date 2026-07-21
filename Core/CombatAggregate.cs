@@ -52,6 +52,34 @@ namespace EqlMetrics.Core
         public double ActiveAvoidPct => SwingsAtYou > 0 ? 100.0 * ActiveAvoids / SwingsAtYou : 0;
         public double DamageTakenPerHour => DamageTaken / Hours;
 
+        // ---- damage shield reflect (thorns / flames / etc.) — passive damage your shield deals back to attackers ----
+        public long DamageShieldTotal;
+        public long DamageShieldHits;
+        public long BiggestDamageShield;
+        public long LastReflect;      // most recent reflect amount (for the live "box")
+        public readonly Dictionary<string, long> DamageShieldByName = new(StringComparer.OrdinalIgnoreCase);
+        public void DamageShieldReflect(long dmg, string shield, DateTime t)
+        {
+            Touch(t);
+            DamageShieldTotal += dmg;
+            DamageShieldHits++;
+            LastReflect = dmg;
+            if (dmg > BiggestDamageShield) BiggestDamageShield = dmg;
+            if (!string.IsNullOrEmpty(shield))
+                DamageShieldByName[shield] = DamageShieldByName.GetValueOrDefault(shield) + dmg;
+        }
+        public double DamageShieldDps => DamageShieldTotal / Seconds;
+        /// <summary>Name of the shield contributing the most (e.g. "thorns"), for the label; "" if none.</summary>
+        public string PrimaryShieldName
+        {
+            get
+            {
+                string best = ""; long bestV = -1;
+                foreach (var kv in DamageShieldByName) if (kv.Value > bestV) { bestV = kv.Value; best = kv.Key; }
+                return best;
+            }
+        }
+
         public DateTime? FirstTime;
         public DateTime LastTime;
         public string PrimaryEnemy = "";
@@ -153,6 +181,8 @@ namespace EqlMetrics.Core
         public IEnumerable<Combatant> Enemies => Combatants.Values.Where(c => !IsFriendly(c));
 
         public double DpsOf(Combatant c) => c.TotalDamage / Seconds;
+        // Damage-shield reflect is recorded as a player ability (kind = Shield), so it's already in the player's
+        // TotalDamage — no separate fold needed. PlayerDps / CombinedDps / breakdown all include it consistently.
         public double PlayerDps => Player is null ? 0 : DpsOf(Player);
         public double PetDps => Pet is null ? 0 : DpsOf(Pet);
         public double CombinedDps => PlayerDps + PetDps;

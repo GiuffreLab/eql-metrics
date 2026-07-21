@@ -10,12 +10,15 @@ namespace EqlMetrics.Core
         public string LastLogPath { get; set; } = "";
         public string PlayerName { get; set; } = "";
         public string PetName { get; set; } = "";
+        public bool PetAutoDetect { get; set; } = true;   // also learn pet name from heals (off if you group-heal others)
         public double PanelAlpha { get; set; } = 0.42;   // 0..1 backdrop opacity
         public double Left { get; set; } = 60;
         public double Top { get; set; } = 60;
         public bool Expanded { get; set; } = true;
         public bool LootExpanded { get; set; } = false;   // loot list: false = last 2, true = last 10
         public bool ClickThrough { get; set; } = false;
+        public bool LayoutHorizontal { get; set; } = false; // false = vertical card, true = horizontal top/bottom bar
+        public bool ExpandUp { get; set; } = false;         // horizontal bar: grow upward (bar at screen bottom) when expanding
         public bool FollowFromStart { get; set; } = false; // start at end of file (live) by default
 
         // ---- notification toggles (all default on) ----
@@ -24,6 +27,8 @@ namespace EqlMetrics.Core
         public bool NotifStealth { get; set; } = true;     // hide/sneak success & failure
         public bool NotifSkills { get; set; } = true;      // backstab / kick / strike / cleave pop-ups
         public bool NotifQuickBuff { get; set; } = true;   // Quick Buff ready
+        public bool NotifHarmTouch { get; set; } = true;   // Harm Touch ready (SK)
+        public bool NotifLayOnHands { get; set; } = true;  // Lay on Hands ready (PAL)
         public bool NotifMend { get; set; } = true;        // Mend self-heal
         public int NotifMaxOnScreen { get; set; } = 3;     // 1..5 rising notifications at once
 

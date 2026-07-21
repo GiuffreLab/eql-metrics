@@ -4,7 +4,7 @@ using System.Linq;
 
 namespace EqlMetrics.Core
 {
-    public enum DamageKind { Melee, Nuke, Dot }
+    public enum DamageKind { Melee, Nuke, Dot, Shield }
 
     /// <summary>Per-ability (spell or melee skill) rollup for a single combatant.</summary>
     public sealed class AbilityStat

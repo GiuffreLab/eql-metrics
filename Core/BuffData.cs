@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.RegularExpressions;
 
 namespace EqlMetrics.Core
 {
@@ -9,6 +10,16 @@ namespace EqlMetrics.Core
         public string Apply = "";   // "cast on you" flavor line
         public string Fade = "";    // "wears off" flavor line
         public double DurationSec;  // 0 = unknown / permanent (no countdown)
+    }
+
+    /// <summary>A buff whose landing line names the TARGET (e.g. a pet buff: "&lt;pet&gt; goes berserk." for Burnout).
+    /// The wiki's "cast on other" text uses "Someone" as the target placeholder; <see cref="Match"/> captures it as &lt;t&gt;.</summary>
+    public sealed class OtherBuffDef
+    {
+        public string Spell = "";
+        public BuffCat Category;    // Pet (target_type == "Pet")
+        public double DurationSec;
+        public Regex Match = null!; // built from cast_on_other: "Someone goes berserk." -> ^(?<t>.+?)\s+goes\s+berserk\.$
     }
 
     /// <summary>
@@ -44,6 +55,13 @@ namespace EqlMetrics.Core
         // one apply/fade line may map to several spells (e.g. Quickness & Alacrity share text)
         public static readonly Dictionary<string, List<BuffDef>> ByApply = new(StringComparer.OrdinalIgnoreCase);
         public static readonly Dictionary<string, List<string>> FadeToSpells = new(StringComparer.OrdinalIgnoreCase);
+        // pet/other-target buffs, matched by their target-naming landing line (populated from spells.json)
+        public static readonly List<OtherBuffDef> OtherApply = new();
+        public static void SetOtherApply(IEnumerable<OtherBuffDef> defs)
+        {
+            OtherApply.Clear();
+            OtherApply.AddRange(defs);
+        }
         // authoritative spell -> duration (seconds), base-name keyed, for ALL spells (pet/debuff too)
         public static readonly Dictionary<string, double> DurationBySpell = new(StringComparer.OrdinalIgnoreCase);
 

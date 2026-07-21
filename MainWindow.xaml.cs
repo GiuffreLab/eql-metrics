@@ -30,6 +30,7 @@ namespace EqlMetrics
         private HwndSource? _source;
 
         private string _selected = "";        // combatant selected in Breakdown
+        private string _lastShownPet = "";     // last pet name reflected in the char label (for auto-detect refresh)
         private string _tab = "Overview";
         private DateTime? _selEncStart;        // selected encounter (null = latest)
         private Dictionary<string, double> _buffDur = new(StringComparer.OrdinalIgnoreCase);
@@ -46,8 +47,12 @@ namespace EqlMetrics
         private readonly List<CleaveHit> _cleaveBurst = new();         // pending same-actor+skill AoE burst
         private DateTime _cleaveBurstWall = DateTime.MinValue;         // wall-clock of the last hit added (for settle)
         private DateTime _lastMendTime = DateTime.MinValue;            // cursor into s.MendEvents
-        private DateTime? _qbNotifiedFor;   // Quick Buff activation we've already flashed "ready" for
+        private readonly Dictionary<string, DateTime> _cdNotifiedFor = new();   // cooldown name -> activation already flashed "ready"
         private const double FreshSec = 8;  // ignore events older than this (skips historical log replay on load)
+        // A single Reave can shave 60s off Harm Touch in one jump, so the crossing Reave can push the
+        // ready time up to ~60s into the past instantly. This window must exceed that (but stay well under
+        // the minutes/hours-old readiness seen when replaying an old log on load, so replay is still filtered).
+        private const double HarmTouchReadyWindowSec = 90;
 
         // ---- palette ----
         private static SolidColorBrush B(string hex)
@@ -62,6 +67,9 @@ namespace EqlMetrics
         private static readonly Brush Grp = B("#57D6A6"), GrpT = B("#B6F0D8");
         private static readonly Brush Nuke = B("#FF9F5A"), Dot = B("#C98BFF"), Melee = B("#5AD6C4");
         private static readonly Brush Gold = B("#F4C85B"), Mote = B("#8BE0FF"), Heal = B("#57D6A6"), Xp = B("#C9A6FF"), DmgIn = B("#FF7A7A");
+        private static readonly Brush Crimson = B("#E05A6B");   // Harm Touch (SK)
+        private static readonly Brush HolyGold = B("#F5DE8A");  // Lay on Hands (PAL)
+        private static readonly Brush Thorn = B("#9BD86A");     // damage shield reflect
         private static readonly Brush RowBg = B("#0DFFFFFF"), RowStroke = B("#2A313B"), RowStrokeSel = B("#66C9A24B");
         private static readonly Brush TabSel = B("#2AC9A24B");
         private static readonly Brush AccentGold = B("#C9A24B");   // subtle default_modern chrome accent
@@ -75,6 +83,8 @@ namespace EqlMetrics
         private static readonly Color FlFade = C(0xFF, 0x7A, 0x7A);   // red (buff faded)
         private static readonly Color FlDebuff = C(0xFF, 0x9F, 0x5A); // orange (debuff wore off)
         private static readonly Color FlQuickBuff = C(0xF4, 0xC8, 0x5B); // gold (Quick Buff ready)
+        private static readonly Color FlHarmTouch = C(0xE0, 0x5A, 0x6B); // crimson (Harm Touch ready — SK)
+        private static readonly Color FlLayOnHands = C(0xF5, 0xDE, 0x8A); // holy gold (Lay on Hands ready — PAL)
         private static readonly Color FlSkill = C(0x5A, 0xD6, 0xC4);     // teal (skill proc, e.g. backstab)
         private static readonly Color FlSkillCrit = C(0xFF, 0xC8, 0x5B); // bright gold (skill crit)
         private static readonly Color FlSkillMiss = C(0xC9, 0x7A, 0x7A); // muted red (skill miss)
@@ -94,6 +104,7 @@ namespace EqlMetrics
             _timer.Tick += (_, __) => Refresh();
             Loaded += OnLoaded;
             Closing += OnClosing;
+            SizeChanged += OnWindowSizeChanged;   // pins the bottom edge when growing upward (horizontal expand-up)
         }
 
         // ================= startup / shutdown =================
@@ -166,9 +177,10 @@ namespace EqlMetrics
 
             lock (_lock)
             {
-                _stats = new SessionStats { PlayerName = player, PetName = _settings.PetName };
+                _stats = new SessionStats { PlayerName = player, PetName = _settings.PetName, PetAutoDetectEnabled = _settings.PetAutoDetect };
                 _stats.Buffs.UseShared(_buffDur, _buffCat);   // share learned durations across sessions
             }
+            _lastShownPet = _settings.PetName;
 
             CharLabel.Text = player + (string.IsNullOrEmpty(_settings.PetName) ? "" : "  +  " + _settings.PetName);
             StatusText.Text = Path.GetFileName(path);
@@ -190,6 +202,14 @@ namespace EqlMetrics
             lock (_lock)
             {
                 var s = _stats;
+
+                // reflect an auto-detected (or changed) pet name in the header as soon as it's learned
+                if (!string.Equals(s.PetName, _lastShownPet, StringComparison.OrdinalIgnoreCase))
+                {
+                    _lastShownPet = s.PetName;
+                    CharLabel.Text = s.PlayerName + (string.IsNullOrEmpty(s.PetName) ? "" : "  +  " + s.PetName);
+                }
+
                 if (!s.FirstTime.HasValue) { BigDps.Text = "0"; return; }
 
                 var cur = s.Current;
@@ -234,6 +254,30 @@ namespace EqlMetrics
                 ? (s.AwaitingLevelBaseline ? $"L{s.Level}" : $"L{s.Level} · {s.LevelProgressPct:0}%")
                 : "";
             CoreRates.Children.Add(Chip("XP/HR", s.XpPerHour.ToString("0.0") + "%", xpSub, Xp));
+
+            // Damage-shield reflect box — shows the latest reflected hit (5, 25, …) with the sustained rate below.
+            if (s.DamageShieldHits > 0)
+            {
+                string dsLabel = string.IsNullOrEmpty(s.PrimaryShieldName) ? "DMG SHIELD" : s.PrimaryShieldName.ToUpperInvariant();
+                CoreRates.Children.Add(Chip(dsLabel, s.LastDamageShield.ToString("0"), s.DamageShieldDps.ToString("0") + "/s", Thorn));
+            }
+
+            // Cooldown boxes (Quick Buff / Harm Touch / Lay on Hands) — shown once we've seen the player use one,
+            // and only while that skill's tracking toggle is on. Live mm:ss countdown with how much a proc has
+            // shaved, flipping to a gold "READY" when it's up.
+            foreach (var cd in s.ProcCooldowns)
+            {
+                if (!cd.Tracking || !CooldownNotifyEnabled(cd.Name)) continue;
+                if (cd.IsReady(s.LastTime))
+                    CoreRates.Children.Add(Chip(cd.Name.ToUpperInvariant(), "READY", "", Gold));
+                else
+                {
+                    double rem = cd.SecondsRemaining(s.LastTime) ?? 0;
+                    string sub = cd.Reductions > 0 ? $"-{cd.Reductions}m via {cd.ReducerSkill.ToLowerInvariant()}" : "";
+                    if (cd.Calibrated) sub = string.IsNullOrEmpty(sub) ? "✓ synced" : sub + " · synced";
+                    CoreRates.Children.Add(Chip(cd.Name.ToUpperInvariant(), FmtClock(rem), sub, CooldownChipBrush(cd.Name)));
+                }
+            }
         }
 
         private static string WhoFor(SessionStats s, BuffTracker.FadeEvent f) => f.Category switch
@@ -257,7 +301,7 @@ namespace EqlMetrics
             if (_settings.NotifBuffs) NotifyBuffs(s, now);
             if (_settings.NotifSkills) NotifySkills(s, now);
             if (_settings.NotifMend) NotifyMend(s, now);
-            if (_settings.NotifQuickBuff) NotifyQuickBuff(s, now);
+            NotifyProcCooldowns(s, now);   // Quick Buff / Harm Touch / Lay on Hands (each gated by its own setting inside)
         }
 
         // ---- hide / sneak (success + failure) ----
@@ -283,7 +327,8 @@ namespace EqlMetrics
         private void NotifyBuffs(SessionStats s, DateTime now)
         {
             var gains = FreshSince(s.Buffs.Gains, ref _lastGainTime, now);
-            if (gains.Count == 1) _flash!.Flash("", gains[0].Name, "buff gained", FlGain);
+            if (gains.Count == 1)
+                _flash!.Flash("", gains[0].Name, gains[0].Category == BuffCat.Pet ? "gained on " + WhoFor(s, gains[0]) : "buff gained", FlGain);
             else if (gains.Count > 1) _flash!.Flash("✦", gains.Count + " buffs", "gained", FlGain);
 
             var fades = FreshSince(s.Buffs.Fades, ref _lastFadeTime, now);
@@ -314,7 +359,7 @@ namespace EqlMetrics
                     if ((now - _lastMissFlash).TotalSeconds >= MissFlashGapSec)   // throttle miss spam
                     {
                         _lastMissFlash = now;
-                        _flash!.Flash("✕", "MISS", p.Skill.ToUpperInvariant(), FlSkillMiss, holdMs: 850);
+                        _flash!.Flash("✕", "MISS", (p.Pet ? "PET " : "") + p.Skill.ToUpperInvariant(), FlSkillMiss, holdMs: 850);
                     }
                     i++;
                     continue;
@@ -322,14 +367,21 @@ namespace EqlMetrics
                 long total = p.Damage; bool crit = p.Crit; int hits = 1; var last = p; int j = i + 1;
                 while (j < fresh.Count && !fresh[j].Miss
                        && string.Equals(fresh[j].Skill, p.Skill, StringComparison.OrdinalIgnoreCase)
+                       && fresh[j].Pet == p.Pet   // don't merge your procs with your pet's
                        && (fresh[j].Time - last.Time).TotalSeconds <= 1.5)
                 {
                     total += fresh[j].Damage; crit |= fresh[j].Crit; hits++; last = fresh[j]; j++;
                 }
                 string name = p.Skill.ToUpperInvariant();
                 string label = hits == 1 ? name : hits == 2 ? "DOUBLE " + name : hits + "× " + name;
-                if (crit)
+                if (p.Pet) label = "PET " + label;   // e.g. "PET BACKSTAB", "PET DOUBLE FRENZY"
+                bool isHarmTouch = string.Equals(p.Skill, "Harm Touch", StringComparison.OrdinalIgnoreCase);
+                if (crit && isHarmTouch)
+                    _flash!.Flash("☠", total.ToString(), label + " — CRITICAL!", FlSkillCrit, holdMs: 2000);   // keep the skull, gold crit styling
+                else if (crit)
                     _flash!.Flash("✦", total.ToString(), label + " — CRITICAL!", FlSkillCrit, holdMs: 1600);
+                else if (isHarmTouch)
+                    _flash!.Flash("☠", total.ToString(), label, FlHarmTouch, holdMs: 1400);
                 else
                     _flash!.Flash(hits > 1 ? "⚔⚔" : "⚔", total.ToString(), label, FlSkill, holdMs: hits > 1 ? 1400 : 1100);
                 i = j;
@@ -365,19 +417,50 @@ namespace EqlMetrics
             }
         }
 
-        // ---- Quick Buff ready (timed off the activation line; no "ready" log exists) ----
-        private void NotifyQuickBuff(SessionStats s, DateTime now)
+        // ---- proc-shortened cooldowns ready (Quick Buff, SK Harm Touch, Paladin Lay on Hands). Timed off the cast line;
+        //      the reducing proc (Reave/Smite) shaves 60s each, so the ready moment is whatever ReadyAt works
+        //      out to. The wide window covers the up-to-60s a single proc can shave in one jump (see constant). ----
+        private void NotifyProcCooldowns(SessionStats s, DateTime now)
         {
-            if (s.QuickBuffCastAt is DateTime qb)
+            foreach (var cd in s.ProcCooldowns)
             {
-                var ready = qb.AddSeconds(SessionStats.QuickBuffCooldownSec);
-                if (_qbNotifiedFor != qb && now >= ready && (now - ready).TotalSeconds < 20)
+                if (!CooldownNotifyEnabled(cd.Name)) continue;
+                if (cd.CastAt is DateTime cast && cd.ReadyAt is DateTime ready)
                 {
-                    _qbNotifiedFor = qb;
-                    _flash!.Flash("✦", "QUICK BUFF READY", "cooldown up — recast", FlQuickBuff, holdMs: 1500);
+                    bool already = _cdNotifiedFor.TryGetValue(cd.Name, out var last) && last == cast;
+                    if (!already && now >= ready && (now - ready).TotalSeconds < HarmTouchReadyWindowSec)
+                    {
+                        _cdNotifiedFor[cd.Name] = cast;
+                        var (icon, accent, sub) = CooldownFlashStyle(cd.Name);
+                        _flash!.Flash(icon, cd.Name.ToUpperInvariant() + " READY", sub, accent, holdMs: 1700);
+                    }
                 }
             }
         }
+
+        private bool CooldownNotifyEnabled(string name) => name switch
+        {
+            "Quick Buff" => _settings.NotifQuickBuff,
+            "Harm Touch" => _settings.NotifHarmTouch,
+            "Lay on Hands" => _settings.NotifLayOnHands,
+            _ => true
+        };
+
+        private (string icon, Color accent, string sub) CooldownFlashStyle(string name) => name switch
+        {
+            "Quick Buff" => ("✦", FlQuickBuff, "cooldown up — recast"),
+            "Harm Touch" => ("☠", FlHarmTouch, "cooldown up — unleash it"),
+            "Lay on Hands" => ("✚", FlLayOnHands, "cooldown up — big heal ready"),
+            _ => ("✦", FlQuickBuff, "cooldown up")
+        };
+
+        private Brush CooldownChipBrush(string name) => name switch
+        {
+            "Quick Buff" => Gold,
+            "Harm Touch" => Crimson,
+            "Lay on Hands" => HolyGold,
+            _ => Nuke
+        };
 
         // Events newer than 'last' (advancing it to the newest seen), returning only the
         // fresh ones — so historical lines advance the cursor without triggering a flash.
@@ -498,6 +581,7 @@ namespace EqlMetrics
             G("Motes/hr", s.MotesPerHour.ToString("0"), Mote);
             G("Overheal", s.OverhealPct.ToString("0") + "%", Heal);
             G("Best hit", bestHit.ToString("0"), Text);
+            if (s.DamageShieldHits > 0) G("Dmg shield", s.DamageShieldTotal.ToString("0"), Thorn);
             p.Children.Add(grid);
 
             p.Children.Add(SectionHeader("TOP DAMAGE"));
@@ -678,6 +762,7 @@ namespace EqlMetrics
             sum.Children.Add(StatBox("HPS", e.Agg.Hps.ToString("0.0"), Heal));
             sum.Children.Add(StatBox("Dmg taken", e.Agg.DamageTaken.ToString("0"), DmgIn));
             if (e.Agg.SwingsAtYou > 0) sum.Children.Add(StatBox("Avoided", e.Agg.AvoidedPct.ToString("0") + "%", Melee));
+            if (e.Agg.DamageShieldHits > 0) sum.Children.Add(StatBox("Dmg shield", e.Agg.DamageShieldTotal.ToString("0"), Thorn));
             sum.Children.Add(StatBox("Enemy HPS", e.Agg.EnemyHps.ToString("0.0"), Nuke));
             p.Children.Add(sum);
 
@@ -906,6 +991,7 @@ namespace EqlMetrics
         {
             DamageKind.Nuke => ("NUKE", Nuke),
             DamageKind.Dot => ("DOT", Dot),
+            DamageKind.Shield => ("DS", Thorn),
             _ => ("MELEE", Melee),
         };
 
@@ -1137,15 +1223,77 @@ namespace EqlMetrics
         {
             _settings.PetName = (name ?? "").Trim();
             lock (_lock) { _stats.PetName = _settings.PetName; }
+            _lastShownPet = _settings.PetName;
             CharLabel.Text = _settings.PlayerName + (string.IsNullOrEmpty(_settings.PetName) ? "" : "  +  " + _settings.PetName);
+        }
+
+        public void SetPetAutoDetect(bool on)
+        {
+            _settings.PetAutoDetect = on;
+            lock (_lock) { _stats.PetAutoDetectEnabled = on; }
+            _settings.Save();
         }
 
         private void ApplyExpanded(bool expanded)
         {
             MaxPanel.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
             BiggestStrip.Visibility = expanded ? Visibility.Collapsed : Visibility.Visible;
-            Width = expanded ? 470 : 340;
             _settings.Expanded = expanded;
+            ApplyLayout();   // width + host + expand direction all depend on layout mode
+        }
+
+        // ================= layout (vertical card  vs  horizontal top/bottom bar) =================
+        private static readonly Thickness HeadMV = new(13, 10, 13, 0), RatesMV = new(13, 6, 13, 4), BigMV = new(13, 2, 13, 6);
+        private static readonly Thickness HeadMH = new(12, 6, 18, 6), RatesMH = new(0, 10, 18, 6), BigMH = new(0, 6, 12, 6);
+        private const double HorizontalWidth = 900;
+
+        // Re-hosts the minimized blocks (vertical stack vs horizontal row), orders the expanded panel
+        // above or below the strip for the chosen grow direction, and sizes the window.
+        private void ApplyLayout()
+        {
+            bool horiz = _settings.LayoutHorizontal;
+            bool up = _settings.ExpandUp;
+
+            // Move the three minimized blocks into the active host.
+            var blocks = new FrameworkElement[] { HeadBlock, RatesBlock, BiggestStrip };
+            Panel host = horiz ? (Panel)HMinHost : VMinHost;
+            foreach (var b in blocks) (b.Parent as Panel)?.Children.Remove(b);
+            foreach (var b in blocks) host.Children.Add(b);
+            HeadBlock.Margin = horiz ? HeadMH : HeadMV;
+            RatesBlock.Margin = horiz ? RatesMH : RatesMV;
+            BiggestStrip.Margin = horiz ? BigMH : BigMV;
+            VMinHost.Visibility = horiz ? Visibility.Collapsed : Visibility.Visible;
+            HMinHost.Visibility = horiz ? Visibility.Visible : Visibility.Collapsed;
+
+            // Rebuild the shell in the right order. Expand-up (bar sits at screen bottom) puts the
+            // expanded panel ABOVE the strip; otherwise it goes below (the classic downward growth).
+            Shell.Children.Clear();
+            Shell.Children.Add(TitleBar);
+            Shell.Children.Add(ToastArea);
+            if (horiz && up) { Shell.Children.Add(MaxPanel); Shell.Children.Add(host); }
+            else { Shell.Children.Add(host); Shell.Children.Add(MaxPanel); }
+            Shell.Children.Add(Footer);
+
+            // Sizing per mode. Minimized vertical auto-fits its WIDTH so the rate/cooldown/DS chips always sit on
+            // ONE line (a fixed width made the WrapPanel spill to a second row as boxes came and went). Expanded
+            // vertical and the horizontal bar stay at fixed widths (their content is a scrollable tab area / wide row).
+            if (horiz) { SizeToContent = SizeToContent.Height; Width = HorizontalWidth; }
+            else if (_settings.Expanded) { SizeToContent = SizeToContent.Height; Width = 470; }
+            else { SizeToContent = SizeToContent.WidthAndHeight; MinWidth = 340; }
+        }
+
+        public void SetLayoutHorizontal(bool on) { _settings.LayoutHorizontal = on; ApplyLayout(); _settings.Save(); }
+        public void SetExpandUp(bool on) { _settings.ExpandUp = on; ApplyLayout(); _settings.Save(); }
+
+        // Keep the bottom edge pinned while the window grows/shrinks in expand-up mode (so it grows upward).
+        private void OnWindowSizeChanged(object sender, SizeChangedEventArgs e)
+        {
+            if (_settings.LayoutHorizontal && _settings.ExpandUp
+                && e.PreviousSize.Height > 0 && e.NewSize.Height > 0)
+            {
+                double dh = e.NewSize.Height - e.PreviousSize.Height;
+                if (Math.Abs(dh) > 0.5) Top -= dh;
+            }
         }
 
         private void BtnClickThru_Click(object sender, RoutedEventArgs e) => ToggleClickThrough();

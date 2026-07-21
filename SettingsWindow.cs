@@ -38,6 +38,8 @@ namespace EqlMetrics
             root.Children.Add(Section("OVERLAY"));
             root.Children.Add(SliderRow("Transparency", 0.12, 0.95, _m.BackdropOpacity, v => _m.SetBackdropOpacity(v), pctOfRange: true));
             root.Children.Add(Toggle("Click-through (Ctrl+Alt+X)", _s.ClickThrough, on => _m.SetClickThrough(on)));
+            root.Children.Add(Toggle("Horizontal bar (top/bottom of screen)", _s.LayoutHorizontal, on => _m.SetLayoutHorizontal(on)));
+            root.Children.Add(Toggle("Expand upward (bar docked at bottom)", _s.ExpandUp, on => _m.SetExpandUp(on)));
 
             root.Children.Add(Section("NOTIFICATIONS"));
             root.Children.Add(Toggle("All notifications", _s.NotifMaster, on => { _s.NotifMaster = on; Save(); }));
@@ -45,11 +47,14 @@ namespace EqlMetrics
             root.Children.Add(Toggle("Hide / sneak", _s.NotifStealth, on => { _s.NotifStealth = on; Save(); }));
             root.Children.Add(Toggle("Skill pop-ups (backstab / kick / strike / cleave)", _s.NotifSkills, on => { _s.NotifSkills = on; Save(); }));
             root.Children.Add(Toggle("Quick Buff ready", _s.NotifQuickBuff, on => { _s.NotifQuickBuff = on; Save(); }));
+            root.Children.Add(Toggle("Harm Touch ready (SK)", _s.NotifHarmTouch, on => { _s.NotifHarmTouch = on; Save(); }));
+            root.Children.Add(Toggle("Lay on Hands ready (PAL)", _s.NotifLayOnHands, on => { _s.NotifLayOnHands = on; Save(); }));
             root.Children.Add(Toggle("Mend", _s.NotifMend, on => { _s.NotifMend = on; Save(); }));
             root.Children.Add(SliderRow("Max on screen", 1, 5, _s.NotifMaxOnScreen, v => { _s.NotifMaxOnScreen = (int)Math.Round(v); Save(); }, whole: true));
 
             root.Children.Add(Section("CHARACTER & PARSE"));
-            root.Children.Add(TextRow("Pet name", _s.PetName, val => _m.SetPetName(val)));
+            root.Children.Add(Toggle("Auto-detect pet (learns the name from the log)", _s.PetAutoDetect, on => _m.SetPetAutoDetect(on)));
+            root.Children.Add(TextRow("Pet name (manual / fallback)", _s.PetName, val => _m.SetPetName(val)));
             root.Children.Add(Toggle("Read whole log on load (else live only)", _s.FollowFromStart, on => { _s.FollowFromStart = on; Save(); }));
             root.Children.Add(LogRow());
 

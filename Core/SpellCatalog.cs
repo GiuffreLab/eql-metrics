@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
+using System.Text.RegularExpressions;
 
 namespace EqlMetrics.Core
 {
@@ -57,9 +59,44 @@ namespace EqlMetrics.Core
                 });
             }
 
+            // pet buffs: the landing line names the pet ("Someone goes berserk." -> "<pet> goes berserk."), so build
+            // a matcher from cast_on_other with "Someone" as the target capture. Their fades still come from the
+            // "Your pet's <spell> spell has worn off" line, so we only need the gain side here.
+            var others = new List<OtherBuffDef>();
+            foreach (var r in rows)
+            {
+                if (!string.Equals(r.target_type, "Pet", StringComparison.OrdinalIgnoreCase)) continue;
+                string co = (r.cast_on_other ?? "").Trim();
+                if (co.Length == 0 || co.StartsWith("|")) continue;
+                if (co.IndexOf("Someone", StringComparison.Ordinal) < 0) continue;   // need the target placeholder
+                var rx = BuildOtherRx(co);
+                if (rx == null) continue;
+                others.Add(new OtherBuffDef { Spell = r.spell, Category = BuffCat.Pet, DurationSec = r.duration_sec, Match = rx });
+            }
+
             if (durs.Count > 0) BuffData.AddDurations(durs);
             if (defs.Count > 0) BuffData.Rebuild(defs);   // only replace the table when we actually parsed some
+            BuffData.SetOtherApply(others);
             return defs.Count;
+        }
+
+        // "Someone  goes berserk." -> ^(?<t>.+?) goes berserk\.$   ("Someone" = target capture)
+        private static Regex? BuildOtherRx(string castOnOther)
+        {
+            try
+            {
+                string norm = Regex.Replace(castOnOther.Trim(), @"\s+", " ");   // collapse the wiki's double-spaces
+                string[] parts = Regex.Split(norm, "Someone");                  // literal split on the placeholder
+                var sb = new StringBuilder("^");
+                for (int i = 0; i < parts.Length; i++)
+                {
+                    if (i > 0) sb.Append("(?<t>.+?)");
+                    sb.Append(Regex.Escape(parts[i]));
+                }
+                sb.Append('$');
+                return new Regex(sb.ToString(), RegexOptions.Compiled);
+            }
+            catch { return null; }
         }
     }
 }

@@ -23,12 +23,14 @@ namespace EqlMetrics
         public static readonly Brush Grp = B("#57D6A6"), GrpT = B("#B6F0D8");
         public static readonly Brush Nuke = B("#FF9F5A"), Dot = B("#C98BFF"), Melee = B("#5AD6C4");
         public static readonly Brush Gold = B("#F4C85B"), Mote = B("#8BE0FF"), Heal = B("#57D6A6"), Xp = B("#C9A6FF"), DmgIn = B("#FF7A7A");
+        public static readonly Brush Thorn = B("#9BD86A");   // damage shield reflect
         public static readonly Brush RowBg = B("#12FFFFFF"), RowStroke = B("#2A313B");
 
         public static (string, Brush) BadgeFor(DamageKind k) => k switch
         {
             DamageKind.Nuke => ("NUKE", Nuke),
             DamageKind.Dot => ("DOT", Dot),
+            DamageKind.Shield => ("DS", Thorn),
             _ => ("MELEE", Melee),
         };
 

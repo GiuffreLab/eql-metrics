@@ -20,6 +20,7 @@ that floats over the game and matches the `default_modern` UI theme.
 - [Install & run](#install--run)
 - [Using the overlay](#using-the-overlay)
 - [Notifications](#notifications)
+- [Cooldown tracking](#cooldown-tracking)
 - [Encounters & the fight pop-out](#encounters--the-fight-pop-out)
 - [Avoidance & survivability](#avoidance--survivability)
 - [XP & leveling](#xp--leveling)
@@ -43,8 +44,11 @@ that floats over the game and matches the `default_modern` UI theme.
 - **Buff & debuff tracking** — self-buffs are mapped from their flavor text via the EQL wiki,
   pet buffs and debuffs from their worn-off lines. Alerts on gain and on fade.
 - **Center-screen combat pop-ups** that rise and fade — backstab, kick / round kick, strike,
-  cleave (with double/triple attack and multi-target detection), hide/sneak success & failure,
-  Quick Buff cooldown, Mend, and more.
+  cleave (with double/triple attack and multi-target detection), Reave / Smite / Frenzy (with their
+  multi-hits merged), hide/sneak success & failure, Mend, and more.
+- **Cooldown tracking** for Quick Buff, SK **Harm Touch** and Paladin **Lay on Hands** — a live
+  countdown box plus a "ready" pop-up, self-correcting off the game's own cooldown readout when you
+  tap a skill early (see below).
 - **XP & leveling** — live level, % into the current level, **time-to-level** and **kills-to-level**,
   XP/hr, average XP per kill, and a **best-XP-mobs** ranking. Projections self-calibrate off your
   level-ups (no manual setup), and it says so while it waits for the first one.
@@ -78,7 +82,7 @@ up to three at once.
   if you have the SDK.)
 - **EverQuest Legends** running in **Windowed** or **Borderless Windowed** mode — an overlay
   can't draw on top of exclusive fullscreen.
-- **Logging enabled** in-game: type `/log` once so the client writes `eqlog_<You>_<server>.txt`.
+- **Logging enabled** in-game: type `/log on` once so the client writes `eqlog_<You>_<server>.txt`.
 
 ## Install & run
 
@@ -135,16 +139,44 @@ click-through and never steal focus from the game.
 
 What flashes, each with its own color and icon:
 
-- **Skills** — backstab / kick / strike hits with the damage, styled gold on a crit; **double**
-  and **triple** attacks are merged into one pop-up ("DOUBLE KICK"), and multi-target cleave /
-  round-kick shows the target count ("ROUND KICK — 3 targets").
+- **Skills** — backstab / kick / strike / Reave / Smite / Frenzy hits with the damage, styled gold on
+  a crit; **double** and **triple** attacks (and Frenzy's extra-weapon swings) are merged into one
+  pop-up ("DOUBLE FRENZY"), and multi-target cleave / round-kick shows the target count ("ROUND
+  KICK — 3 targets"). Reave and Smite fold in their magic rider (Reaving / Smiting Strike) so the
+  number is the whole hit. These proc constantly, so only landed hits flash — misses stay silent.
+- **Cooldowns ready** — a "ready" flash when Quick Buff, Harm Touch, or Lay on Hands comes back up
+  (see [Cooldown tracking](#cooldown-tracking)).
 - **Buffs** — green "gained" when a buff lands, red "faded from you/pet" when one drops (a mass
   cast coalesces into one "N buffs gained").
 - **Hide / Sneak** — success in violet/teal, failure in red with a ⚠.
-- **Quick Buff** — a gold "ready" pop-up when its 10-minute cooldown is up.
 - **Mend** — a green confirmation (the log carries no heal amount).
 
 Every category can be toggled in Settings, and the max-on-screen count is adjustable.
+
+## Cooldown tracking
+
+EverQuest Legends never logs a line when an ability *becomes* ready, and its custom-UI system can't
+be scripted — so, like every other stat here, cooldowns are reconstructed from the log. EQL Metrics
+tracks three long-reuse abilities and shows each as a live **countdown box** in the HUD that flips to
+a gold **READY**, plus a center-screen "ready" flash:
+
+- **Quick Buff** — fixed 10-minute reuse.
+- **Harm Touch** (Shadowknight) — 20-minute base, but every landed **Reave** shaves 60 seconds off it.
+- **Lay on Hands** (Paladin) — 15-minute base, and every landed **Smite** shaves 60 seconds off it.
+
+The countdown starts when it sees *you* activate the ability (mob casts of the same name are
+ignored), then counts down — subtracting time as your Reaves / Smites land, shown as "-3m via reave".
+
+**Tap the skill while it's on cooldown to keep the timer honest.** There's no proactive "ready"
+message, but the game *does* print an exact remaining time the moment you try to use something too
+early — "You can use the ability Harm Touch again in 4 minute(s) 20 seconds." EQL Metrics reads that
+line and **snaps the timer to the game's exact value**, correcting any accumulated drift. It even
+works if the app started after you'd already cast — one early tap and it starts tracking from the
+real remaining time. When a timer has been synced this way it shows a small "✓ synced" tag. So an
+occasional tap on a cooldown skill is all it takes to keep the countdown dead-on.
+
+Each of the three has its own toggle in **Settings → Notifications**; turning one off hides both its
+HUD box and its ready flash.
 
 ## Encounters & the fight pop-out
 
@@ -248,12 +280,47 @@ like this exist as standalone tools.
 
 **Can** (it's all in the log): every damage/heal/miss event, avoidance (dodge/parry/block),
 stuns, buff/debuff apply & fade, loot/coin/motes/XP/AA, skill activations and their crits,
-double/triple attacks, and multi-target splashes.
+double/triple attacks, and multi-target splashes. Cooldowns are *estimated* from your activation
+line and can be *synced exactly* by tapping the skill early (see [Cooldown tracking](#cooldown-tracking)).
 
 **Can't** (not in the log): your or the target's **HP/mana** (so no health bars, no "target at
 20%", no Mend amount), **armor mitigation / AC**, spell-resist defense, and anything about other
 players' buffs or cooldowns. Some same-verb abilities are indistinguishable in text (e.g. Kick /
 Round Kick / Flying Kick all log as "kick") except when a multi-target splash reveals them.
+
+## Extending it
+
+Adding a new class skill is usually a one-liner once you know its log text:
+
+- A skill that should get its own pop-up on every landed hit → add its name to `NotableSkills`
+  in `Core/CombatParser.cs`.
+- A skill that can splash multiple targets (cleave-style) → add it to `BurstSkills`.
+- A brand-new melee verb the game uses → add it to the `MeleeVerbs` table so it's tracked at all.
+
+Skills that log with unique phrasing (disciplines, feign death, taunt, etc.) get their own
+detection line in `SessionStats.Apply`, following the existing patterns.
+
+## Project layout
+
+```
+Core/                 UI-agnostic parser (unit-testable)
+  CombatParser.cs     SessionStats: line parsing, encounters, buffs, skills, avoidance
+  CombatAggregate.cs  reusable rollup (session + per-encounter)
+  BuffTracker.cs      active buffs, fade/gain events, learned durations
+  BuffData.cs         self-buff message/duration table (seeded + wiki)
+  SpellCatalog.cs     applies scraped rows to BuffData
+  SpellScraper.cs     in-app EQL-wiki scraper (HttpClient)
+  Settings.cs         persisted user settings
+MainWindow.xaml(.cs)  the overlay: HUD + tabs, notification routing
+StealthFlash.cs       CenterFlash — the rising center-screen notifications
+EncounterWindow.xaml.cs   per-fight detail pop-out
+SettingsWindow.cs     the gear-icon settings window
+SpellStore.cs         loads/refreshes spells.json from %APPDATA%
+EqlUi.cs              shared dark-overlay UI building blocks
+images/               screenshots used by this README
+Run-EqlMetrics.cmd    double-click launcher (visible)
+Run-EqlMetrics.vbs    double-click launcher (silent)
+```
 
 ---
 
