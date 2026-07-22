@@ -38,6 +38,10 @@ namespace EqlMetrics.Core
         // shared/persisted learned data (host owns the files)
         public Dictionary<string, double> Durations = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, BuffCat> Categories = new(StringComparer.OrdinalIgnoreCase);
+        public HashSet<string> Songs = new(StringComparer.OrdinalIgnoreCase);   // buffs that PULSE (bard songs) — no gain popups
+
+        private readonly Dictionary<string, int> _pulseCount = new(StringComparer.OrdinalIgnoreCase);
+        private const double SongPulseWindowSec = 10;   // a re-apply this soon after the last = a pulse, not a refresh
 
         public readonly List<FadeEvent> Fades = new();   // recent worn-off events, for transient alerts
         public readonly List<FadeEvent> Gains = new();   // recent "landed" events, for transient alerts
@@ -49,10 +53,11 @@ namespace EqlMetrics.Core
         public void Memorize(string spell) => _memorized.Add(BaseName(spell));
         public void Forget(string spell) => _memorized.Remove(BaseName(spell));
 
-        public void UseShared(Dictionary<string, double> durations, Dictionary<string, BuffCat> categories)
+        public void UseShared(Dictionary<string, double> durations, Dictionary<string, BuffCat> categories, HashSet<string> songs)
         {
             Durations = durations;
             Categories = categories;
+            Songs = songs;
         }
 
         public void ResetActive() { _active.Clear(); _lastCast.Clear(); Fades.Clear(); Gains.Clear(); _memorized.Clear(); }
@@ -104,18 +109,28 @@ namespace EqlMetrics.Core
         public void SelfApply(string spell, double durationSec, DateTime t)
         {
             string bn = BaseName(spell);
-            _lastCast[bn] = t;
             Categories[bn] = BuffCat.Self;
             // wiki duration (durationSec) seeds the timer; a learned value, if trusted, wins
             double? eff = EffectiveDuration(bn) ?? (durationSec > 0 ? durationSec : (double?)null);
-            _active[bn] = new Buff
+
+            // Bard songs pulse (re-apply their flavor every ~6s) — detect the fast re-application and mark them as
+            // songs so they never spam "buff gained". A genuine buff refresh happens near expiry, not seconds in.
+            bool wasActive = _active.TryGetValue(bn, out var prev) && prev.Remaining(t) > 0;
+            bool fastReapply = wasActive && prev.Elapsed(t) < SongPulseWindowSec;
+            if (fastReapply)
             {
-                Name = bn,
-                Category = BuffCat.Self,
-                Start = t,
-                Duration = eff
-            };
-            RecordGain(bn, BuffCat.Self, "", t);   // the flavor apply line is a definitive "landed" event
+                int n = _pulseCount.TryGetValue(bn, out var c) ? c + 1 : 1;
+                _pulseCount[bn] = n;
+                if (n >= 2) Songs.Add(bn);   // two rapid pulses = definitely a song (not an accidental double-cast)
+            }
+            else _pulseCount[bn] = 0;
+
+            _lastCast[bn] = t;
+            _active[bn] = new Buff { Name = bn, Category = BuffCat.Self, Start = t, Duration = eff };
+
+            // Only pop on a genuine fresh landing: not a known song, not a pulse, not a still-active refresh.
+            if (Songs.Contains(bn) || wasActive) return;
+            RecordGain(bn, BuffCat.Self, "", t);
         }
 
         private void RecordGain(string name, BuffCat cat, string target, DateTime t)

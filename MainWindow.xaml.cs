@@ -35,6 +35,7 @@ namespace EqlMetrics
         private DateTime? _selEncStart;        // selected encounter (null = latest)
         private Dictionary<string, double> _buffDur = new(StringComparer.OrdinalIgnoreCase);
         private Dictionary<string, BuffCat> _buffCat = new(StringComparer.OrdinalIgnoreCase);
+        private HashSet<string> _buffSongs = new(StringComparer.OrdinalIgnoreCase);   // learned bard songs (no popups)
         // center-screen notifications (stealth, buffs, Quick Buff) via CenterFlash
         private CenterFlash? _flash;
         private DateTime _lastStealthTime = DateTime.MinValue;
@@ -95,7 +96,7 @@ namespace EqlMetrics
         {
             InitializeComponent();
             _settings = Settings.Load();
-            (_buffDur, _buffCat) = BuffStore.Load();
+            (_buffDur, _buffCat, _buffSongs) = BuffStore.Load();
             SpellStore.LoadIntoBuffData();   // override self-buff table from scraped spells.json if present
             Backdrop.Opacity = Clamp(_settings.PanelAlpha, 0.12, 0.95);
             _selected = string.IsNullOrEmpty(_settings.PlayerName) ? "" : _settings.PlayerName;
@@ -141,7 +142,7 @@ namespace EqlMetrics
             _settings.Left = Left; _settings.Top = Top;
             _settings.PanelAlpha = Backdrop.Opacity;
             _settings.Save();
-            BuffStore.Save(_buffDur, _buffCat);
+            BuffStore.Save(_buffDur, _buffCat, _buffSongs);
             try { _spellCts?.Cancel(); } catch { }
             try { _flash?.Close(); } catch { }
             try { _tailer?.Stop(); } catch { }
@@ -178,7 +179,7 @@ namespace EqlMetrics
             lock (_lock)
             {
                 _stats = new SessionStats { PlayerName = player, PetName = _settings.PetName, PetAutoDetectEnabled = _settings.PetAutoDetect };
-                _stats.Buffs.UseShared(_buffDur, _buffCat);   // share learned durations across sessions
+                _stats.Buffs.UseShared(_buffDur, _buffCat, _buffSongs);   // share learned durations/songs across sessions
             }
             _lastShownPet = _settings.PetName;
 
@@ -493,8 +494,10 @@ namespace EqlMetrics
             _cleaveBurst.Clear();
             int nt = targets.Count;
 
+            // A lone cleave is silent only for the PET (its constant auto-swings would spam); YOUR cleaves
+            // (e.g. warrior Cleave) pop on every landed hit, single-target included.
             bool aoeOnly = string.Equals(first.Skill, "Cleave", StringComparison.OrdinalIgnoreCase);
-            if (aoeOnly && nt < 2) return;   // a lone cleave is just the pet's normal swing — stay silent
+            if (aoeOnly && nt < 2 && !s.IsPlayerToken(first.Actor)) return;
 
             // base name: a multi-target kick is definitively a round kick; cleave stays cleave; else the verb
             string baseName = string.Equals(first.Skill, "Kick", StringComparison.OrdinalIgnoreCase)
@@ -1216,7 +1219,7 @@ namespace EqlMetrics
         public void SetClickThrough(bool on) => ApplyClickThrough(on);
         public void SaveSettings() => _settings.Save();
         public void ResetSessionNow() { lock (_lock) { _stats.Reset(); } _selEncStart = null; }
-        public void ResetLearnedBuffs() { _buffDur.Clear(); _buffCat.Clear(); BuffStore.Save(_buffDur, _buffCat); }
+        public void ResetLearnedBuffs() { _buffDur.Clear(); _buffCat.Clear(); _buffSongs.Clear(); BuffStore.Save(_buffDur, _buffCat, _buffSongs); }
         public void PickLog() => BtnPick_Click(this, new RoutedEventArgs());
 
         public void SetPetName(string name)
