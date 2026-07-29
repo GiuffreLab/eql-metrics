@@ -226,6 +226,7 @@ namespace EqlMetrics
                 SessionTimer.Text = FmtClock(s.SessionSeconds);
 
                 BuildCoreRates(s);
+                DrawHeadSpark(s);
 
                 CheckNotifications(s);
                 if (BiggestStrip.Visibility == Visibility.Visible) BuildBiggest(s);
@@ -246,39 +247,160 @@ namespace EqlMetrics
 
         private void BuildCoreRates(SessionStats s)
         {
+            // Compact "MiniBar" rows: label left, value right, with a sparkline behind the time-series stats
+            // (incoming/DTPS) and a clean proportional fill behind everything else. Ordered by theme:
+            // offense/support, defense, fight-context, progress, then the shield + cooldown group.
             CoreRates.Children.Clear();
-            CoreRates.Children.Add(Chip("HPS", s.Hps.ToString("0"), "", Heal));
-            CoreRates.Children.Add(Chip("IN DPS", s.IncomingDpsMe.ToString("0"), "", DmgIn));
-            if (s.SwingsAtYou > 0) CoreRates.Children.Add(Chip("AVOID", s.AvoidedPct.ToString("0") + "%", "", Melee));
-            CoreRates.Children.Add(Chip("ENEMY HPS", s.EnemyHps.ToString("0"), "", Nuke));
+            bool horiz = _settings.LayoutHorizontal;
+            double bw = horiz ? 152 : 300;
+
+            var cur = s.Current;
+            List<long>? inSeries = (cur != null && cur.InBuckets.Count >= 2) ? cur.InBuckets : null;
+            List<long>? healSeries = (cur != null && cur.HealBuckets.Count >= 2) ? cur.HealBuckets : null;
+            List<long>? enemyHealSeries = (cur != null && cur.EnemyHealBuckets.Count >= 2) ? cur.EnemyHealBuckets : null;
+
+            void Bar(string l, string v, string sub, Brush b, double frac, List<long>? series = null, bool plain = false)
+                => CoreRates.Children.Add(MiniBar(l, v, sub, b, frac, series, bw, horiz, plain));
+
+            // Throughput rates get a live sparkline (or a flat fill until a fight has 2+ seconds of history).
+            Bar("HPS", s.Hps.ToString("0"), "", Heal, 0, healSeries);
+            Bar("DTPS", s.IncomingDpsMe.ToString("0"), "", DmgIn, 0, inSeries);
+            Bar("ENEMY HPS", s.EnemyHps.ToString("0"), "", Nuke, 0, enemyHealSeries);
+            // Percentages / progress / discrete values read as plain text — a sliding bar there is noise.
+            if (s.SwingsAtYou > 0) Bar("AVOID", s.AvoidedPct.ToString("0") + "%", "", Melee, 0, null, plain: true);
             string xpSub = s.Level.HasValue
                 ? (s.AwaitingLevelBaseline ? $"L{s.Level}" : $"L{s.Level} · {s.LevelProgressPct:0}%")
                 : "";
-            CoreRates.Children.Add(Chip("XP/HR", s.XpPerHour.ToString("0.0") + "%", xpSub, Xp));
+            Bar("XP/HR", s.XpPerHour.ToString("0.0") + "%", xpSub, Xp, 0, null, plain: true);
 
-            // Damage-shield reflect box — shows the latest reflected hit (5, 25, …) with the sustained rate below.
+            // Damage-shield reflect — latest reflected hit (5, 25, …) with the sustained rate as the sub.
             if (s.DamageShieldHits > 0)
             {
                 string dsLabel = string.IsNullOrEmpty(s.PrimaryShieldName) ? "DMG SHIELD" : s.PrimaryShieldName.ToUpperInvariant();
-                CoreRates.Children.Add(Chip(dsLabel, s.LastDamageShield.ToString("0"), s.DamageShieldDps.ToString("0") + "/s", Thorn));
+                Bar(dsLabel, s.LastDamageShield.ToString("0"), s.DamageShieldDps.ToString("0") + "/s", Thorn, 0, null, plain: true);
             }
 
-            // Cooldown boxes (Quick Buff / Harm Touch / Lay on Hands) — shown once we've seen the player use one,
-            // and only while that skill's tracking toggle is on. Live mm:ss countdown with how much a proc has
-            // shaved, flipping to a gold "READY" when it's up.
+            // Cooldown bars (Quick Buff / Harm Touch / Lay on Hands) — shown once the player has used one, and
+            // only while its toggle is on. The bar drains as the mm:ss counts down, then flips to a gold "READY".
+            // (A countdown is a genuine progress bar, so these keep the fill.)
             foreach (var cd in s.ProcCooldowns)
             {
                 if (!cd.Tracking || !CooldownNotifyEnabled(cd.Name)) continue;
                 if (cd.IsReady(s.LastTime))
-                    CoreRates.Children.Add(Chip(cd.Name.ToUpperInvariant(), "READY", "", Gold));
+                    Bar(cd.Name.ToUpperInvariant(), "READY", "", Gold, 1.0);
                 else
                 {
                     double rem = cd.SecondsRemaining(s.LastTime) ?? 0;
-                    string sub = cd.Reductions > 0 ? $"-{cd.Reductions}m via {cd.ReducerSkill.ToLowerInvariant()}" : "";
-                    if (cd.Calibrated) sub = string.IsNullOrEmpty(sub) ? "✓ synced" : sub + " · synced";
-                    CoreRates.Children.Add(Chip(cd.Name.ToUpperInvariant(), FmtClock(rem), sub, CooldownChipBrush(cd.Name)));
+                    string sub = cd.Reductions > 0 ? $"-{cd.Reductions}m" : "";
+                    if (cd.Calibrated) sub = string.IsNullOrEmpty(sub) ? "✓" : sub + " ✓";
+                    double frac = cd.BaseSec > 0 ? rem / cd.BaseSec : 0;
+                    Bar(cd.Name.ToUpperInvariant(), FmtClock(rem), sub, CooldownChipBrush(cd.Name), frac);
                 }
             }
+        }
+
+        // A compact horizontal stat bar: label left, value right. Time-series stats (a non-null series) get a
+        // faint area sparkline as the backdrop; everything else gets a proportional colored fill.
+        private FrameworkElement MiniBar(string label, string value, string sub, Brush brush,
+            double frac, List<long>? series, double width, bool horiz, bool plain = false)
+        {
+            frac = Clamp(frac, 0.0, 1.0);
+            var grid = new Grid { ClipToBounds = true };
+
+            if (plain)
+            {
+                // text-only row: no fill, no sparkline (used for %/progress/discrete values)
+            }
+            else if (series != null && series.Count >= 2)
+                grid.Children.Add(Sparkline(series, brush, 0.55));
+            else
+            {
+                var fillGrid = new Grid();
+                double f = Math.Max(frac, 0.0001);
+                fillGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(f, GridUnitType.Star) });
+                fillGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1 - f, GridUnitType.Star) });
+                var r = new System.Windows.Shapes.Rectangle { Fill = brush, Opacity = 0.17, RadiusX = 8, RadiusY = 8 };
+                Grid.SetColumn(r, 0); fillGrid.Children.Add(r);
+                grid.Children.Add(fillGrid);
+            }
+
+            var lab = new TextBlock
+            {
+                Text = label, Foreground = Text, FontSize = 11.5, FontWeight = FontWeights.Bold,
+                VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0),
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            var valSp = new StackPanel
+            {
+                Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 0, 11, 0)
+            };
+            valSp.Children.Add(new TextBlock { Text = value, Foreground = brush, FontSize = 15, FontWeight = FontWeights.Bold });
+            if (!string.IsNullOrEmpty(sub))
+                valSp.Children.Add(new TextBlock { Text = sub, Foreground = Dim, FontSize = 9, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(5, 0, 0, 1) });
+
+            var dock = new DockPanel { LastChildFill = false };
+            DockPanel.SetDock(lab, Dock.Left);
+            DockPanel.SetDock(valSp, Dock.Right);
+            dock.Children.Add(lab);
+            dock.Children.Add(valSp);
+            grid.Children.Add(dock);
+
+            return new Border
+            {
+                Width = width, Height = 32, CornerRadius = new CornerRadius(9),
+                Background = RowBg, BorderBrush = RowStroke, BorderThickness = new Thickness(1),
+                Margin = horiz ? new Thickness(0, 0, 6, 6) : new Thickness(0, 0, 0, 6),
+                ClipToBounds = true, Child = grid
+            };
+        }
+
+        // Area sparkline that stretches to fill its host (via a Viewbox on a fixed logical canvas).
+        private FrameworkElement Sparkline(List<long> data, Brush color, double opacity)
+        {
+            const double W = 300, H = 40;
+            int n = data.Count;
+            long max = 1; foreach (var v in data) if (v > max) max = v;
+            double step = n > 1 ? W / (n - 1) : W;
+            var line = new PointCollection();
+            for (int i = 0; i < n; i++)
+            {
+                long v = data[i];
+                double x = i * step;
+                double y = H - (double)v / max * (H - 4) - 2;
+                line.Add(new Point(x, y));
+            }
+            var canvas = new Canvas { Width = W, Height = H };
+            var area = new PointCollection();
+            foreach (var p in line) area.Add(p);
+            area.Add(new Point(W, H)); area.Add(new Point(0, H));
+            canvas.Children.Add(new System.Windows.Shapes.Polygon { Points = area, Fill = Tint(color, opacity * 0.45) });
+            canvas.Children.Add(new System.Windows.Shapes.Polyline { Points = line, Stroke = color, StrokeThickness = 1.4, Opacity = opacity, StrokeLineJoin = PenLineJoin.Round });
+            return new Viewbox { Stretch = Stretch.Fill, Child = canvas };
+        }
+
+        // Faint DPS sparkline behind the headline number (current fight's per-second output).
+        private void DrawHeadSpark(SessionStats s)
+        {
+            HeadSpark.Children.Clear();
+            var cur = s.Current;
+            if (cur == null || cur.DpsBuckets.Count < 2) return;
+            var data = cur.DpsBuckets;
+            double W = HeadSpark.Width, H = HeadSpark.Height;
+            long max = 1; foreach (var v in data) if (v > max) max = v;
+            int n = data.Count; double step = n > 1 ? W / (n - 1) : W;
+            var line = new PointCollection();
+            for (int i = 0; i < n; i++)
+            {
+                double x = i * step;
+                double y = H - (double)data[i] / max * (H - 3) - 1.5;
+                line.Add(new Point(x, y));
+            }
+            var area = new PointCollection();
+            foreach (var p in line) area.Add(p);
+            area.Add(new Point(W, H)); area.Add(new Point(0, H));
+            HeadSpark.Children.Add(new System.Windows.Shapes.Polygon { Points = area, Fill = Tint(You, 0.20) });
+            HeadSpark.Children.Add(new System.Windows.Shapes.Polyline { Points = line, Stroke = You, StrokeThickness = 1.6, Opacity = 0.85, StrokeLineJoin = PenLineJoin.Round });
         }
 
         private static string WhoFor(SessionStats s, BuffTracker.FadeEvent f) => f.Category switch
@@ -672,7 +794,7 @@ namespace EqlMetrics
             foreach (var a in abilities)
             {
                 (string bt, Brush bc) = BadgeFor(a.Kind);
-                string sub = $"x{a.Hits}  avg {a.Avg:0.0}  max {a.Max}" + (a.Crits > 0 ? $"  crit {a.CritPct:0}%" : "") + (a.Misses > 0 ? $"  miss {a.MissPct:0}%" : "");
+                string sub = $"x{a.Hits}  avg {a.Avg:0.0}  max {a.Max}" + (a.Crits > 0 ? $"  crit {a.CritPct:0}%" : "") + (a.Misses > 0 ? $"  miss {a.MissPct:0}%" : "") + (a.Resisted > 0 ? $"  resist {a.ResistPct:0}%" : "");
                 p.Children.Add(Row(a.Name, sub, (a.Total / seconds).ToString("0.0"), (100.0 * a.Total / tot).ToString("0") + "%",
                     (double)a.Total / top, bc, bc, badge: bt, badgeBrush: bc));
             }
@@ -695,8 +817,68 @@ namespace EqlMetrics
             var p = AvoidancePanel;
             p.Children.Clear();
 
-            p.Children.Add(SectionHeader("SURVIVABILITY"));
+            // ===== OFFENSE — how often your swings connect =====
+            var acc = s.PlayerMelee;
+            p.Children.Add(SectionHeader("OFFENSE — your melee accuracy"));
+            if (acc.Swings == 0) p.Children.Add(Hint("no melee swings yet"));
+            else
+            {
+                var og = new WrapPanel();
+                og.Children.Add(StatBox("Hit rate", acc.HitPct.ToString("0") + "%", Grp));
+                og.Children.Add(StatBox("Swings", acc.Swings.ToString("0"), Text));
+                og.Children.Add(StatBox("Landed", acc.Landed.ToString("0"), Grp));
+                og.Children.Add(StatBox("Missed", acc.FlatMiss.ToString("0"), Dim));
+                og.Children.Add(StatBox("Avoided", acc.Avoided.ToString("0"), Nuke));
+                p.Children.Add(og);
+
+                long asw = Math.Max(1, acc.Swings);
+                void OffRow(string name, long n, Brush c) => p.Children.Add(Row(name, n + " of " + acc.Swings + " swings",
+                    (100.0 * n / asw).ToString("0") + "%", "", (double)n / asw, c, c));
+                OffRow("Landed", acc.Landed, Grp);
+                OffRow("Missed (whiff)", acc.FlatMiss, Dim);
+                OffRow("Avoided by target", acc.Avoided, Nuke);
+            }
+
+            var pacc = s.PetMelee;
+            if (pacc.Swings > 0)
+            {
+                p.Children.Add(SectionHeader("OFFENSE — pet accuracy"));
+                var pg = new WrapPanel();
+                pg.Children.Add(StatBox("Hit rate", pacc.HitPct.ToString("0") + "%", Grp));
+                pg.Children.Add(StatBox("Swings", pacc.Swings.ToString("0"), Text));
+                pg.Children.Add(StatBox("Landed", pacc.Landed.ToString("0"), Grp));
+                pg.Children.Add(StatBox("Missed", pacc.FlatMiss.ToString("0"), Dim));
+                pg.Children.Add(StatBox("Avoided", pacc.Avoided.ToString("0"), Nuke));
+                p.Children.Add(pg);
+            }
+
+            // ===== OFFENSE — spell reliability (resist / fizzle / interrupt) =====
+            if (s.SpellCasts > 0 || s.SpellResists > 0)
+            {
+                p.Children.Add(SectionHeader("OFFENSE — spell reliability"));
+                var sg = new WrapPanel();
+                sg.Children.Add(StatBox("Casts", s.SpellCasts.ToString("0"), Text));
+                sg.Children.Add(StatBox("Resisted", s.SpellResists.ToString("0"), Nuke));
+                sg.Children.Add(StatBox("Fizzled", s.SpellFizzles.ToString("0"), Dim));
+                sg.Children.Add(StatBox("Interrupted", s.SpellInterrupts.ToString("0"), DmgIn));
+                sg.Children.Add(StatBox("Fizzle %", s.SpellFizzlePct.ToString("0") + "%", Dim));
+                sg.Children.Add(StatBox("Interrupt %", s.SpellInterruptPct.ToString("0") + "%", DmgIn));
+                p.Children.Add(sg);
+
+                var resDetail = s.PlayerSpellResistDetail.ToList();
+                if (resDetail.Count > 0)
+                {
+                    int maxRes = Math.Max(1, resDetail.Max(a => a.Resisted));
+                    foreach (var a in resDetail)
+                        p.Children.Add(Row(a.Name, a.Resisted + " resisted", a.ResistPct.ToString("0") + "%", "of casts",
+                            (double)a.Resisted / maxRes, Nuke, Nuke));
+                }
+            }
+
+            // ===== DEFENSE — how often you get hit + survivability =====
+            p.Children.Add(SectionHeader("DEFENSE — survivability"));
             var sum = new WrapPanel();
+            if (s.SwingsAtYou > 0) sum.Children.Add(StatBox("Enemy hit rate", s.EnemyHitPctOnMe.ToString("0") + "%", DmgIn));
             sum.Children.Add(StatBox("Avoided", s.AvoidedPct.ToString("0") + "%", Melee));
             sum.Children.Add(StatBox("Swings at you", s.SwingsAtYou.ToString("0"), Text));
             sum.Children.Add(StatBox("Dmg taken", s.DamageTaken.ToString("0"), DmgIn));
@@ -1282,7 +1464,9 @@ namespace EqlMetrics
             // vertical and the horizontal bar stay at fixed widths (their content is a scrollable tab area / wide row).
             if (horiz) { SizeToContent = SizeToContent.Height; Width = HorizontalWidth; }
             else if (_settings.Expanded) { SizeToContent = SizeToContent.Height; Width = 470; }
-            else { SizeToContent = SizeToContent.WidthAndHeight; MinWidth = 340; }
+            // Minimized vertical is now a fixed-width column of compact bars (previously auto-width to keep the
+            // one-line chip strip from wrapping — no longer needed since bars are one-per-row by design).
+            else { SizeToContent = SizeToContent.Height; Width = 330; MinWidth = 0; }
         }
 
         public void SetLayoutHorizontal(bool on) { _settings.LayoutHorizontal = on; ApplyLayout(); _settings.Save(); }

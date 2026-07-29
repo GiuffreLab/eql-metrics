@@ -36,6 +36,9 @@ that floats over the game and matches the `default_modern` UI theme.
 ## Features
 
 - **Live DPS / HPS** for you and your pet, plus consolidated incoming damage and enemy healing.
+- **Sparkline HUD** — the minimized view is a stack of compact label-left / value-right bars;
+  throughput rates (HPS, DTPS, enemy HPS) draw a live per-second sparkline, percentages read as
+  plain text, and each tracked cooldown drains toward a gold **READY**.
 - **Encounters** — fights are auto-segmented on a 10-second idle gap, with a rolling history,
   a per-second DPS/incoming timeline, and a detailed pop-out window per fight.
 - **Damage breakdown** — per-ability totals, hits, average, max, crit % and miss %.
@@ -58,6 +61,12 @@ that floats over the game and matches the `default_modern` UI theme.
 - **Themed** to match the game's `default_modern` skin (charcoal + gold), with your own data palette.
 
 ## Screenshots
+
+**Minimized HUD** — the headline DPS with a sparkline of the current fight behind it, then compact
+stat bars: throughput rates (HPS, DTPS, enemy HPS) carry a live sparkline, percentages and discrete
+values read as plain text, and each tracked cooldown drains toward a gold **READY**.
+
+![Minimized HUD](images/minimized.png)
 
 | Overview (maximized) | Avoidance tab |
 | --- | --- |
@@ -82,7 +91,7 @@ up to three at once.
   if you have the SDK.)
 - **EverQuest Legends** running in **Windowed** or **Borderless Windowed** mode — an overlay
   can't draw on top of exclusive fullscreen.
-- **Logging enabled** in-game: type `/log` once so the client writes `eqlog_<You>_<server>.txt`.
+- **Logging enabled** in-game: type `/log on` once so the client writes `eqlog_<You>_<server>.txt`.
 
 ## Install & run
 
@@ -120,9 +129,11 @@ The window is borderless and always-on-top. Drag the title bar to move it. The t
 **Click-through** makes the overlay ignore the mouse so clicks pass to the game — toggle it back
 off (the hotkey works even while click-through is on) when you want to interact with the overlay.
 
-The **minimized HUD** shows the headline DPS, a split for you/pet, and a row of rate chips
-(HPS, incoming DPS, avoid %, enemy HPS, XP/hr — with your level and % into it as a subline).
-**Expand** for the tabbed view:
+The **minimized HUD** shows the headline DPS (with a faint sparkline of the current fight behind it)
+and a you/pet split, then a stack of compact stat bars: **HPS**, **DTPS** (incoming), and **enemy
+HPS** each carry a live per-second sparkline; **avoid %**, **XP/hr** (with your level and % into it),
+and **damage-shield reflect** read as plain values; and any tracked cooldown shows a draining bar
+with its countdown. **Expand** for the tabbed view:
 
 - **Overview** — consolidated totals, an **XP & leveling** section (see below), session rates,
   top damage & healing, biggest hits.
@@ -299,6 +310,28 @@ Adding a new class skill is usually a one-liner once you know its log text:
 
 Skills that log with unique phrasing (disciplines, feign death, taunt, etc.) get their own
 detection line in `SessionStats.Apply`, following the existing patterns.
+
+## Project layout
+
+```
+Core/                 UI-agnostic parser (unit-testable)
+  CombatParser.cs     SessionStats: line parsing, encounters, buffs, skills, avoidance
+  CombatAggregate.cs  reusable rollup (session + per-encounter)
+  BuffTracker.cs      active buffs, fade/gain events, learned durations
+  BuffData.cs         self-buff message/duration table (seeded + wiki)
+  SpellCatalog.cs     applies scraped rows to BuffData
+  SpellScraper.cs     in-app EQL-wiki scraper (HttpClient)
+  Settings.cs         persisted user settings
+MainWindow.xaml(.cs)  the overlay: HUD + tabs, notification routing
+StealthFlash.cs       CenterFlash — the rising center-screen notifications
+EncounterWindow.xaml.cs   per-fight detail pop-out
+SettingsWindow.cs     the gear-icon settings window
+SpellStore.cs         loads/refreshes spells.json from %APPDATA%
+EqlUi.cs              shared dark-overlay UI building blocks
+images/               screenshots used by this README
+Run-EqlMetrics.cmd    double-click launcher (visible)
+Run-EqlMetrics.vbs    double-click launcher (silent)
+```
 
 ---
 

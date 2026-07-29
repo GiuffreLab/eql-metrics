@@ -94,6 +94,24 @@ namespace EqlMetrics.Core
             GetC(attacker).AddMiss(ability, kind);
         }
 
+        public void Avoided(string attacker, string ability, DamageKind kind)
+        {
+            GetC(attacker).AddAvoided(ability, kind);
+        }
+
+        public void Resisted(string caster, string spell)
+        {
+            GetC(caster).AddResisted(spell);
+        }
+        public int PlayerSpellResists => Player?.SpellsResisted ?? 0;
+
+        // ---- melee accuracy (offense). Mirror of the incoming avoidance, but for YOUR / your pet's swings. ----
+        public AccuracyStat MeleeAccuracyOf(Combatant? c) => c?.MeleeAccuracy() ?? default;
+        public AccuracyStat PlayerMelee => MeleeAccuracyOf(Player);
+        public AccuracyStat PetMelee => MeleeAccuracyOf(Pet);
+        /// <summary>How often enemies' melee swings actually land on you (landed / swings-at-you).</summary>
+        public double EnemyHitPctOnMe => SwingsAtYou > 0 ? 100.0 * MeleeSwingsLanded / SwingsAtYou : 0;
+
         private Combatant GetC(string rawName)
         {
             string name = rawName;
@@ -226,6 +244,8 @@ namespace EqlMetrics.Core
         // per-second timeline buckets
         public readonly List<long> DpsBuckets = new();  // player+pet outgoing / sec
         public readonly List<long> InBuckets = new();   // incoming to player+pet / sec
+        public readonly List<long> HealBuckets = new();      // player effective healing / sec
+        public readonly List<long> EnemyHealBuckets = new(); // enemy healing / sec
 
         public void Bucket(List<long> b, int sec, long v)
         {

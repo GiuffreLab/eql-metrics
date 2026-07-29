@@ -13,14 +13,30 @@ namespace EqlMetrics.Core
         public DamageKind Kind;
         public long Total;
         public int Hits;
-        public int Misses;
+        public int Misses;     // flat "but miss!" (your accuracy roll failed)
+        public int Avoided;    // the target dodged/parried/blocked/riposted your swing (their defense)
+        public int Resisted;   // spell fully resisted by the target ("<t> resisted your <spell>!")
         public long Max;
         public int Crits;
 
+        public int Attempts => Hits + Misses + Avoided;
         public double Avg => Hits > 0 ? (double)Total / Hits : 0;
-        public double MissPct => (Hits + Misses) > 0 ? 100.0 * Misses / (Hits + Misses) : 0;
+        public double HitPct => Attempts > 0 ? 100.0 * Hits / Attempts : 0;
+        public double MissPct => Attempts > 0 ? 100.0 * Misses / Attempts : 0;   // flat miss share of all swings
+        public double AvoidPct => Attempts > 0 ? 100.0 * Avoided / Attempts : 0; // target-avoided share
+        public double ResistPct => (Hits + Resisted) > 0 ? 100.0 * Resisted / (Hits + Resisted) : 0;   // of cast attempts, resisted
         public double CritPct => Hits > 0 ? 100.0 * Crits / Hits : 0;
         public string Key => Name + "|" + Kind;
+    }
+
+    /// <summary>Aggregated melee accuracy for a combatant (or the enemies hitting you).</summary>
+    public struct AccuracyStat
+    {
+        public long Swings, Landed, FlatMiss, Avoided;
+        public double HitPct => Swings > 0 ? 100.0 * Landed / Swings : 0;
+        public double MissPct => Swings > 0 ? 100.0 * FlatMiss / Swings : 0;      // flat "but miss!"
+        public double AvoidedPct => Swings > 0 ? 100.0 * Avoided / Swings : 0;    // dodge/parry/block/riposte by target
+        public double MissedTotalPct => Swings > 0 ? 100.0 * (FlatMiss + Avoided) / Swings : 0;
     }
 
     /// <summary>Per-spell healing rollup for the player.</summary>
@@ -70,6 +86,41 @@ namespace EqlMetrics.Core
                 Abilities[key] = a;
             }
             a.Misses++;
+        }
+
+        public void AddAvoided(string ability, DamageKind kind)
+        {
+            string key = ability + "|" + kind;
+            if (!Abilities.TryGetValue(key, out var a))
+            {
+                a = new AbilityStat { Name = ability, Kind = kind };
+                Abilities[key] = a;
+            }
+            a.Avoided++;
+        }
+
+        /// <summary>A spell was resisted. The resist line doesn't say the damage type, so match an existing
+        /// entry by name (whatever kind it landed as); if the spell has never landed, record it as a Nuke.</summary>
+        public void AddResisted(string ability)
+        {
+            foreach (var a in Abilities.Values)
+                if (a.Name.Equals(ability, StringComparison.OrdinalIgnoreCase)) { a.Resisted++; return; }
+            var na = new AbilityStat { Name = ability, Kind = DamageKind.Nuke };
+            Abilities[na.Key] = na;
+            na.Resisted++;
+        }
+
+        /// <summary>Total spells resisted by targets across this actor's abilities.</summary>
+        public int SpellsResisted { get { int n = 0; foreach (var a in Abilities.Values) n += a.Resisted; return n; } }
+
+        /// <summary>Melee accuracy across this actor's melee abilities (spells don't "miss" the same way).</summary>
+        public AccuracyStat MeleeAccuracy()
+        {
+            var acc = new AccuracyStat();
+            foreach (var a in Abilities.Values)
+                if (a.Kind == DamageKind.Melee) { acc.Landed += a.Hits; acc.FlatMiss += a.Misses; acc.Avoided += a.Avoided; }
+            acc.Swings = acc.Landed + acc.FlatMiss + acc.Avoided;
+            return acc;
         }
 
         public IEnumerable<AbilityStat> AbilitiesByDamage =>

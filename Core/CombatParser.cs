@@ -89,6 +89,11 @@ namespace EqlMetrics.Core
         public int Kills;
         public int AbilityPoints;
 
+        // ---- spell reliability (offense analog of melee accuracy) ----
+        public int SpellCasts;        // "You begin casting <spell>." lines
+        public int SpellFizzles;      // "Your <spell> spell fizzles."
+        public int SpellInterrupts;   // "Your <spell> spell is interrupted."
+
         // ---- leveling (accurate once we've seen a ding to baseline the level bar) ----
         public int? CurrentLevel;             // from "Welcome to level N!"
         public bool LevelBaselined;           // true after the first ding this session
@@ -234,6 +239,8 @@ namespace EqlMetrics.Core
         private static readonly Regex RxMissYou = new(@"^You try to (?<verb>[A-Za-z]+) (?<t>.+?), but miss!$", RegexOptions.Compiled);
         // you actively avoid an incoming swing: "<mob> tries to <verb> YOU, but YOU dodge!"
         private static readonly Regex RxAvoidYou = new(@"^.+? tries to [A-Za-z]+ YOU, but YOU (?<how>dodge|parry|block|riposte)!$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        // your/pet swing avoided by the TARGET: "You try to crush X, but X parries!" (3rd-person -s forms → no clash with the incoming "YOU dodge" line above)
+        private static readonly Regex RxAvoidedByTarget = new(@"^(?<a>.+?) (?:try|tries) to (?<verb>[A-Za-z]+) (?<t>.+?), but (?:.+? )?(?:dodges|parries|blocks|ripostes)!$", RegexOptions.Compiled);
         private static readonly Regex RxNuke = new(@"^(?<a>.+?) hits? (?<t>.+?) for (?<d>\d+) points? of (?<type>[A-Za-z]+) damage by (?<spell>.+?)\." + Mod + "$", RegexOptions.Compiled);
         private static readonly Regex RxDot = new(@"^(?<t>.+?) has taken (?<d>\d+) damage from (?<rest>.+?)\." + Mod + "$", RegexOptions.Compiled);
         private static readonly Regex RxHeal = new(@"^(?<healer>.+?) healed (?<t>.+?)(?: over time)? for (?<amt>\d+)(?: \((?<pot>\d+)\))? hit points by (?<spell>.+?)\.$", RegexOptions.Compiled);
@@ -264,6 +271,8 @@ namespace EqlMetrics.Core
         private static readonly Regex RxInterrupt = new(@"^Your (?<spell>.+?) spell is interrupted\.", RegexOptions.Compiled);
         private static readonly Regex RxForget = new(@"^You forget (?<spell>.+?)\.$", RegexOptions.Compiled);
         private static readonly Regex RxResist = new(@"^Your target resisted the (?<spell>.+?) spell\.", RegexOptions.Compiled);
+        // halas-era format: "<mob> resisted your <spell>!" (the actual resist line on this server)
+        private static readonly Regex RxResistYou = new(@"^(?<t>.+?) resisted your (?<spell>.+?)!$", RegexOptions.Compiled);
         private static readonly Regex RxWornPet = new(@"^Your pet's (?<spell>.+?) spell has worn off\.$", RegexOptions.Compiled);
         private static readonly Regex RxWorn = new(@"^Your (?<spell>.+?) spell has worn off(?: of (?<tgt>.+?))?\.$", RegexOptions.Compiled);
         private static readonly Regex RxMemorize = new(@"^You have finished memorizing (?<spell>.+?)\.$", RegexOptions.Compiled);
@@ -276,6 +285,7 @@ namespace EqlMetrics.Core
             Encounters.Clear();
             TotalPlat = 0; MoteCount = 0; MotesByTier.Clear();
             TotalXpPct = 0; Kills = 0; AbilityPoints = 0;
+            SpellCasts = 0; SpellFizzles = 0; SpellInterrupts = 0;
             CurrentLevel = null; LevelBaselined = false; LevelProgressPct = 0; LevelAnchorTime = null;
             XpEventsSinceDing = 0; LevelsGained = 0; XpByMob.Clear(); _lastSlain = null;
             Loot.Clear();
@@ -339,18 +349,36 @@ namespace EqlMetrics.Core
         {
             Session.PlayerHeal(spell, eff, pot, dt);
             if (_cur != null && (dt - _cur.Agg.LastTime).TotalSeconds <= EncounterTimeoutSec)
+            {
                 _cur.Agg.PlayerHeal(spell, eff, pot, dt);
+                _cur.Bucket(_cur.HealBuckets, Sec(_cur, dt), eff);
+            }
         }
         private void RouteNpHeal(string healer, string target, long eff, DateTime dt)
         {
             Session.NpHeal(healer, target, eff, dt);
             if (_cur != null && (dt - _cur.Agg.LastTime).TotalSeconds <= EncounterTimeoutSec)
+            {
                 _cur.Agg.NpHeal(healer, target, eff, dt);
+                // mirror the EnemyHealing read: only count heals involving a known enemy
+                if (_cur.Agg.EnemyNames.Contains(healer) || _cur.Agg.EnemyNames.Contains(target))
+                    _cur.Bucket(_cur.EnemyHealBuckets, Sec(_cur, dt), eff);
+            }
         }
         private void RouteMiss(string attacker, string skill)
         {
             Session.Miss(attacker, skill, DamageKind.Melee);
             _cur?.Agg.Miss(attacker, skill, DamageKind.Melee);
+        }
+        private void RouteAvoidedByTarget(string attacker, string skill)
+        {
+            Session.Avoided(attacker, skill, DamageKind.Melee);
+            _cur?.Agg.Avoided(attacker, skill, DamageKind.Melee);
+        }
+        private void RouteResist(string caster, string spell)
+        {
+            Session.Resisted(caster, spell);
+            _cur?.Agg.Resisted(caster, spell);
         }
 
         // ---- incoming-melee avoidance (survivability), routed to session + current encounter ----
@@ -484,6 +512,15 @@ namespace EqlMetrics.Core
                 }
                 return true;
             }
+            // ---- your/pet swing avoided by the target ("You try to crush X, but X parries!") — 3rd-person -s forms,
+            //      so it never collides with the incoming "but YOU dodge!" line. Counts as a non-hit for accuracy. ----
+            var ab = RxAvoidedByTarget.Match(msg);
+            if (ab.Success)
+            {
+                string a2 = ab.Groups["a"].Value;
+                if (IsPlayerToken(a2) || IsPetToken(a2)) RouteAvoidedByTarget(a2, SkillFor(ab.Groups["verb"].Value));
+                return true;
+            }
 
             // ---- spell nuke ----
             var nu = RxNuke.Match(msg);
@@ -549,7 +586,7 @@ namespace EqlMetrics.Core
 
             // ---- buffs / debuffs ----
             var bc = RxCast.Match(msg);
-            if (bc.Success) { Buffs.BeginCast(bc.Groups["spell"].Value.Trim(), dt); return true; }
+            if (bc.Success) { SpellCasts++; Buffs.BeginCast(bc.Groups["spell"].Value.Trim(), dt); return true; }
             var wp = RxWornPet.Match(msg);
             if (wp.Success) { Buffs.WornOff(wp.Groups["spell"].Value.Trim(), BuffCat.Pet, "", dt); return true; }
             var wo = RxWorn.Match(msg);
@@ -559,9 +596,10 @@ namespace EqlMetrics.Core
                 Buffs.WornOff(wo.Groups["spell"].Value.Trim(), tgt.Length > 0 ? BuffCat.Debuff : BuffCat.Self, tgt, dt);
                 return true;
             }
-            var fz = RxFizzle.Match(msg); if (fz.Success) { Buffs.Fail(fz.Groups["spell"].Value.Trim()); return true; }
-            var it = RxInterrupt.Match(msg); if (it.Success) { Buffs.Fail(it.Groups["spell"].Value.Trim()); return true; }
-            var rs = RxResist.Match(msg); if (rs.Success) { Buffs.Fail(rs.Groups["spell"].Value.Trim()); return true; }
+            var fz = RxFizzle.Match(msg); if (fz.Success) { SpellFizzles++; Buffs.Fail(fz.Groups["spell"].Value.Trim()); return true; }
+            var it = RxInterrupt.Match(msg); if (it.Success) { SpellInterrupts++; Buffs.Fail(it.Groups["spell"].Value.Trim()); return true; }
+            var rs = RxResist.Match(msg); if (rs.Success) { RouteResist("You", rs.Groups["spell"].Value.Trim()); Buffs.Fail(rs.Groups["spell"].Value.Trim()); return true; }
+            var ry = RxResistYou.Match(msg); if (ry.Success) { RouteResist("You", ry.Groups["spell"].Value.Trim()); Buffs.Fail(ry.Groups["spell"].Value.Trim()); return true; }
             var mem = RxMemorize.Match(msg); if (mem.Success) { Buffs.Memorize(mem.Groups["spell"].Value.Trim()); return true; }
             var fg = RxForget.Match(msg); if (fg.Success) { Buffs.Forget(fg.Groups["spell"].Value.Trim()); return true; }
 
@@ -729,6 +767,20 @@ namespace EqlMetrics.Core
         public double AvoidedPct => Session.AvoidedPct;
         public double ActiveAvoidPct => Session.ActiveAvoidPct;
         public long StunsTaken => Session.StunsTaken;
+
+        // ---- melee accuracy (offense: your/pet swings; plus how often enemies land on you) ----
+        public AccuracyStat PlayerMelee => Session.PlayerMelee;
+        public AccuracyStat PetMelee => Session.PetMelee;
+        public double EnemyHitPctOnMe => Session.EnemyHitPctOnMe;
+
+        // ---- spell reliability (offense analog of melee accuracy) ----
+        public int SpellResists => Session.PlayerSpellResists;
+        public double SpellFizzlePct => SpellCasts > 0 ? 100.0 * SpellFizzles / SpellCasts : 0;
+        public double SpellInterruptPct => SpellCasts > 0 ? 100.0 * SpellInterrupts / SpellCasts : 0;
+        /// <summary>Per-spell resist rollup for the player (name, resisted count, resist%), most-resisted first.</summary>
+        public IEnumerable<AbilityStat> PlayerSpellResistDetail =>
+            (Session.Player?.Abilities.Values ?? Enumerable.Empty<AbilityStat>())
+                .Where(a => a.Resisted > 0).OrderByDescending(a => a.Resisted);
 
         // ---- damage shield reflect ----
         public long DamageShieldTotal => Session.DamageShieldTotal;
