@@ -8,6 +8,8 @@ that floats over the game and matches the `default_modern` UI theme.
 > It reads only your own EverQuest log file (the game's built-in `/log`), the same way parsers
 > like ACT and GINA do. Nothing is injected into the game.
 
+> Made by the player of **Kortanix** on the **Halas** server.
+
 ![Overview](images/overview.png)
 
 ---

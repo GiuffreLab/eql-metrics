@@ -64,6 +64,52 @@ namespace EqlMetrics.Core
     public struct CleaveHit { public string Actor; public string Skill; public long Damage; public bool Crit; public string Target; public DateTime Time; }
 
     /// <summary>
+    /// Tracks mesmerized targets by counting UP from the moment mez last landed. Mez duration varies (and can
+    /// be extended), and this client prints no "unmesmerized" line, so a countdown would be a guess — instead we
+    /// show elapsed-since-land, which stays honest. A fresh mez on the same target resets the clock; any damage to
+    /// the target, its death, or an explicit mez wear-off ends tracking (damage breaks mez in-game).
+    /// </summary>
+    public sealed class MezTracker
+    {
+        private struct Entry { public DateTime Land; public double Expected; }   // Expected sec (0 = unknown)
+        private readonly Dictionary<string, Entry> _land = new(StringComparer.OrdinalIgnoreCase);
+
+        // When a mez ends silently (target/pet died with no wear-off line, or it broke off-screen), nothing tells us —
+        // so we self-expire. If we know the spell's duration, drop shortly after it should have worn off; if we don't,
+        // fall back to a time cap that's tighter once combat has gone idle.
+        public const double ExpiredGraceSec = 15;      // past the expected wear-off before we assume it broke
+        public const double UnknownIdleCapSec = 45;    // no known duration + combat idle
+        public const double UnknownActiveCapSec = 180; // no known duration + still fighting (keep longer, we can't tell)
+
+        public void Land(string target, DateTime t, double expectedSec = 0)
+        {
+            if (!string.IsNullOrWhiteSpace(target)) _land[target] = new Entry { Land = t, Expected = expectedSec };
+        }
+        public void Break(string target) { if (!string.IsNullOrEmpty(target)) _land.Remove(target); }
+        public bool Active(string target) => !string.IsNullOrEmpty(target) && _land.ContainsKey(target);
+        public void Clear() => _land.Clear();
+
+        private static double StaleAfter(double expected, bool combatIdle) =>
+            expected > 0 ? expected + ExpiredGraceSec : (combatIdle ? UnknownIdleCapSec : UnknownActiveCapSec);
+
+        /// <summary>Active mez targets with held time and their expected duration; stale entries (past their
+        /// expected wear-off + grace, or the fallback cap) are pruned here so dead/broken mezzes don't linger.</summary>
+        public List<(string target, double heldSec, double expectedSec)> Held(DateTime asOf, bool combatIdle)
+        {
+            var outv = new List<(string, double, double)>();
+            List<string>? stale = null;
+            foreach (var kv in _land)
+            {
+                double s = (asOf - kv.Value.Land).TotalSeconds;
+                if (s > StaleAfter(kv.Value.Expected, combatIdle)) { (stale ??= new List<string>()).Add(kv.Key); continue; }
+                outv.Add((kv.Key, s < 0 ? 0 : s, kv.Value.Expected));
+            }
+            if (stale != null) foreach (var k in stale) _land.Remove(k);
+            return outv;
+        }
+    }
+
+    /// <summary>
     /// Parses an EverQuest log into live combat/session stats plus a rolling
     /// history of encounters (fights). Feed raw lines with Apply().
     /// Timing comes from the log's own timestamps, so it works live or on replay.
@@ -116,6 +162,26 @@ namespace EqlMetrics.Core
         public readonly ProcCooldown LayOnHands = new("Lay on Hands", "You begin casting Lay on Hands", "Smite", 900, 60);
         public IEnumerable<ProcCooldown> ProcCooldowns { get { yield return HarmTouch; yield return LayOnHands; yield return QuickBuff; } }
         public DateTime? QuickBuffCastAt => QuickBuff.CastAt;        // delegating (kept for existing callers)
+
+        // Mez (crowd-control) count-up timers. See MezTracker for why we count up instead of down.
+        public readonly MezTracker Mez = new();
+        public bool MezTrackingEnabled = true;
+        /// <summary>Active mez targets with elapsed-since-land + expected duration; stale ones self-expire
+        /// (past expected+grace, or a fallback cap that tightens once combat has gone idle).</summary>
+        public List<(string target, double heldSec, double expectedSec)> MezHeld => Mez.Held(LastTime, !EncounterActive);
+
+        // last "You begin casting X" — used to attribute a mez land back to its spell so we can compute the
+        // expected (level-scaled) duration and self-expire the timer when it's clearly worn off.
+        private string _lastCastBase = "";
+        private int _lastCastRank;
+        private DateTime _lastCastTime;
+        private double MezExpectedDuration(DateTime landTime)
+        {
+            if (_lastCastBase.Length == 0 || (landTime - _lastCastTime).TotalSeconds > 8) return 0;
+            double? baseSec = BuffData.DurationFor(_lastCastBase);
+            if (!baseSec.HasValue || baseSec.Value <= 0) return 0;
+            return SpellScaling.Scale(baseSec.Value, BuffData.DurationRateFor(_lastCastBase), _lastCastRank);
+        }
 
         // Magic riders that fold into their melee proc's combined popup (Reave→Reaving Strike, Smite→Smiting Strike).
         private static readonly Dictionary<string, string> RiderToProc = new(StringComparer.OrdinalIgnoreCase)
@@ -276,6 +342,9 @@ namespace EqlMetrics.Core
         private static readonly Regex RxWornPet = new(@"^Your pet's (?<spell>.+?) spell has worn off\.$", RegexOptions.Compiled);
         private static readonly Regex RxWorn = new(@"^Your (?<spell>.+?) spell has worn off(?: of (?<tgt>.+?))?\.$", RegexOptions.Compiled);
         private static readonly Regex RxMemorize = new(@"^You have finished memorizing (?<spell>.+?)\.$", RegexOptions.Compiled);
+        // common mez landings: "<t> has been mesmerized/enthralled/entranced[ by ...]." The odder ones (bard
+        // "head nods", "gawks at the glowing lights", etc.) are matched data-driven from the scrape via BuffData.MezApply.
+        private static readonly Regex RxMezLand = new(@"^(?<t>.+?) has been (?:mesmerized|enthralled|entranced)(?: by .+?)?\.$", RegexOptions.Compiled);
 
         public void Reset()
         {
@@ -294,6 +363,7 @@ namespace EqlMetrics.Core
             CleaveHits.Clear();
             MendEvents.Clear();
             QuickBuff.Reset(); HarmTouch.Reset(); LayOnHands.Reset();
+            Mez.Clear();
         }
 
         public static bool TryParseTime(string ts, out DateTime dt)
@@ -330,6 +400,7 @@ namespace EqlMetrics.Core
             var e = Ensure(dt);
             e.Agg.Outgoing(attacker, ability, kind, dmg, crit, target, dt);
             if (IsPlayerToken(attacker) || IsPetToken(attacker)) e.Bucket(e.DpsBuckets, Sec(e, dt), dmg);
+            if (Mez.Active(target)) Mez.Break(target);   // damage breaks mez
         }
         private void RouteIncomingMe(long dmg, string attacker, string ability, DamageKind kind, DateTime dt)
         {
@@ -408,6 +479,11 @@ namespace EqlMetrics.Core
             Session.Stunned(dt);
             Ensure(dt).Agg.Stunned(dt);
         }
+        private void RouteStunAvoided(DateTime dt)
+        {
+            Session.StunAvoided(dt);
+            Ensure(dt).Agg.StunAvoided(dt);
+        }
 
         // ---------- main entry ----------
         public bool Apply(string line)
@@ -458,6 +534,20 @@ namespace EqlMetrics.Core
             var av = RxAvoidYou.Match(msg);
             if (av.Success) { RouteAvoidByYou(av.Groups["how"].Value.ToLowerInvariant(), dt); return true; }
             if (msg == "You are stunned!") { RouteStun(dt); return true; }
+            if (msg == "You avoid the stunning blow.") { RouteStunAvoided(dt); return true; }
+
+            // ---- mez landed → start (or refresh) the count-up timer. Data-driven matchers (all scraped mez-line
+            //      spells, incl. bard mez) first, then the common hardcoded verbs as a no-scrape fallback. ----
+            foreach (var md in BuffData.MezApply)
+            {
+                var mmz = md.Match.Match(msg);
+                if (!mmz.Success) continue;
+                string mtgt = mmz.Groups["t"].Value.Trim();
+                if (MezTrackingEnabled && mtgt.Length > 0 && !IsPlayerToken(mtgt)) Mez.Land(mtgt, dt, MezExpectedDuration(dt));
+                return true;
+            }
+            var mz = RxMezLand.Match(msg);
+            if (mz.Success) { if (MezTrackingEnabled) Mez.Land(mz.Groups["t"].Value.Trim(), dt, MezExpectedDuration(dt)); return true; }
 
             // ---- your damage shield reflecting onto attackers ("X is pierced by YOUR thorns for N...") ----
             var dsm = RxDmgShield.Match(msg);
@@ -558,10 +648,11 @@ namespace EqlMetrics.Core
                     spell = rest.Substring(0, by);
                     owner = rest.Substring(by + 4);
                 }
+                bool dcrit = dm.Groups["mod"].Value.Equals("Critical", StringComparison.OrdinalIgnoreCase);
                 string dtgt = dm.Groups["t"].Value;
                 if (IsPlayerToken(dtgt)) RouteIncomingMe(d, IsPlayerToken(owner) ? "" : owner, spell.Trim(), DamageKind.Dot, dt);
                 else if (IsPetToken(dtgt)) RouteIncomingPet(d, IsPlayerToken(owner) ? "" : owner, spell.Trim(), DamageKind.Dot, dt);
-                else RouteOutgoing(owner, spell.Trim(), DamageKind.Dot, d, false, dtgt, dt);
+                else RouteOutgoing(owner, spell.Trim(), DamageKind.Dot, d, dcrit, dtgt, dt);
                 return true;
             }
 
@@ -586,14 +677,28 @@ namespace EqlMetrics.Core
 
             // ---- buffs / debuffs ----
             var bc = RxCast.Match(msg);
-            if (bc.Success) { SpellCasts++; Buffs.BeginCast(bc.Groups["spell"].Value.Trim(), dt); return true; }
+            if (bc.Success)
+            {
+                SpellCasts++;
+                string cn = bc.Groups["spell"].Value.Trim();
+                _lastCastBase = BuffTracker.BaseName(cn);   // remember for mez-duration attribution
+                _lastCastRank = SpellScaling.RankLevel(cn);
+                _lastCastTime = dt;
+                Buffs.BeginCast(cn, dt);
+                return true;
+            }
             var wp = RxWornPet.Match(msg);
             if (wp.Success) { Buffs.WornOff(wp.Groups["spell"].Value.Trim(), BuffCat.Pet, "", dt); return true; }
             var wo = RxWorn.Match(msg);
             if (wo.Success)
             {
                 string tgt = wo.Groups["tgt"].Success ? wo.Groups["tgt"].Value.Trim() : "";
-                Buffs.WornOff(wo.Groups["spell"].Value.Trim(), tgt.Length > 0 ? BuffCat.Debuff : BuffCat.Self, tgt, dt);
+                string worn = wo.Groups["spell"].Value.Trim();
+                // a mez wear-off ("Your <mez spell> spell has worn off of X") ends its count-up — honor it
+                if (tgt.Length > 0 && (BuffData.IsMezSpell(worn)
+                                       || worn.IndexOf("mesmer", StringComparison.OrdinalIgnoreCase) >= 0
+                                       || worn.IndexOf("enthrall", StringComparison.OrdinalIgnoreCase) >= 0)) Mez.Break(tgt);
+                Buffs.WornOff(worn, tgt.Length > 0 ? BuffCat.Debuff : BuffCat.Self, tgt, dt);
                 return true;
             }
             var fz = RxFizzle.Match(msg); if (fz.Success) { SpellFizzles++; Buffs.Fail(fz.Groups["spell"].Value.Trim()); return true; }
@@ -663,7 +768,7 @@ namespace EqlMetrics.Core
             // ---- kills ----
             var slain = RxYouSlain.Match(msg);
             if (!slain.Success) slain = RxSlainBy.Match(msg);
-            if (slain.Success) { Kills++; _lastSlain = slain.Groups["mob"].Value; _lastSlainTime = dt; return true; }
+            if (slain.Success) { Kills++; _lastSlain = slain.Groups["mob"].Value; _lastSlainTime = dt; Mez.Break(_lastSlain); return true; }
 
             // ---- ability points ----
             var aa = RxAa.Match(msg);
@@ -767,11 +872,22 @@ namespace EqlMetrics.Core
         public double AvoidedPct => Session.AvoidedPct;
         public double ActiveAvoidPct => Session.ActiveAvoidPct;
         public long StunsTaken => Session.StunsTaken;
+        public long StunsAvoided => Session.StunsAvoided;
+        /// <summary>How often you shrug off a stun ("You avoid the stunning blow." / all stun attempts).</summary>
+        public double AvoidStunPct => Session.AvoidStunPct;
 
         // ---- melee accuracy (offense: your/pet swings; plus how often enemies land on you) ----
         public AccuracyStat PlayerMelee => Session.PlayerMelee;
         public AccuracyStat PetMelee => Session.PetMelee;
         public double EnemyHitPctOnMe => Session.EnemyHitPctOnMe;
+
+        // ---- crit rate (crits / landed hits, player) ----
+        public double PlayerMeleeCritPct => Session.Player?.MeleeCritPct ?? 0;
+        public double PlayerSpellCritPct => Session.Player?.SpellCritPct ?? 0;
+        public long PlayerMeleeCrits => Session.Player?.MeleeCrits ?? 0;
+        public long PlayerMeleeHits => Session.Player?.MeleeHits ?? 0;
+        public long PlayerSpellCrits => Session.Player?.SpellCrits ?? 0;
+        public long PlayerSpellHits => Session.Player?.SpellHits ?? 0;
 
         // ---- spell reliability (offense analog of melee accuracy) ----
         public int SpellResists => Session.PlayerSpellResists;

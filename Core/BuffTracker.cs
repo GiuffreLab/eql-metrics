@@ -48,6 +48,7 @@ namespace EqlMetrics.Core
 
         private readonly Dictionary<string, Buff> _active = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, DateTime> _lastCast = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, int> _lastCastLevel = new(StringComparer.OrdinalIgnoreCase);  // upgrade level from the cast numeral
         private readonly HashSet<string> _memorized = new(StringComparer.OrdinalIgnoreCase);  // base names on the spell bar
 
         public void Memorize(string spell) => _memorized.Add(BaseName(spell));
@@ -60,16 +61,20 @@ namespace EqlMetrics.Core
             Songs = songs;
         }
 
-        public void ResetActive() { _active.Clear(); _lastCast.Clear(); Fades.Clear(); Gains.Clear(); _memorized.Clear(); }
+        public void ResetActive() { _active.Clear(); _lastCast.Clear(); _lastCastLevel.Clear(); Fades.Clear(); Gains.Clear(); _memorized.Clear(); }
 
         public void BeginCast(string spell, DateTime t)
         {
             string bn = BaseName(spell);
-            _lastCast[bn] = t;   // base-keyed; used for learning + cast-correlation
+            int level = SpellScaling.RankLevel(spell);   // "Enthrall II" → 2
+            _lastCast[bn] = t;         // base-keyed; used for learning + cast-correlation
+            _lastCastLevel[bn] = level;  // remembered so an apply-driven buff can scale its seed duration
             if (!Categories.TryGetValue(bn, out var cat)) return;
             if (cat == BuffCat.Self) return;   // self-buffs are driven by their apply flavor line, not the cast
-            _active[bn] = new Buff { Name = bn, Category = cat, Start = t, Duration = EffectiveDuration(bn) };
+            _active[bn] = new Buff { Name = bn, Category = cat, Start = t, Duration = EffectiveDuration(bn, level) };
         }
+
+        private int LevelFor(string bn) => _lastCastLevel.TryGetValue(bn, out var lv) ? lv : 0;
 
         public void Fail(string spell) => _active.Remove(BaseName(spell));
 
@@ -83,18 +88,22 @@ namespace EqlMetrics.Core
         public void PetApply(string spell, double durationSec, string target, DateTime t)
         {
             string bn = BaseName(spell);
+            int level = Math.Max(SpellScaling.RankLevel(spell), LevelFor(bn));
             _lastCast[bn] = t;
             Categories[bn] = BuffCat.Pet;
-            double? eff = EffectiveDuration(bn) ?? (durationSec > 0 ? durationSec : (double?)null);
+            double? eff = EffectiveDuration(bn, level) ?? (durationSec > 0 ? SpellScaling.Scale(durationSec, BuffData.DurationRateFor(bn), level) : (double?)null);
             _active[bn] = new Buff { Name = bn, Category = BuffCat.Pet, Start = t, Duration = eff, Target = target ?? "" };
             RecordGain(bn, BuffCat.Pet, target ?? "", t);
         }
 
         // observed (learned) duration includes focus/AA extension, so it wins once we trust it;
         // the wiki base seeds the timer beforehand and bounds the learned value against mis-pairs.
-        private double? EffectiveDuration(string bn)
+        private double? EffectiveDuration(string bn, int level = 0)
         {
             double? wiki = BuffData.DurationFor(bn);
+            // scale the base (level-0) wiki duration up to the upgrade level actually cast
+            if (wiki.HasValue && level > 0)
+                wiki = SpellScaling.Scale(wiki.Value, BuffData.DurationRateFor(bn), level);
             if (Durations.TryGetValue(bn, out var learned) && learned > 0)
             {
                 if (!wiki.HasValue) return learned;
@@ -109,9 +118,10 @@ namespace EqlMetrics.Core
         public void SelfApply(string spell, double durationSec, DateTime t)
         {
             string bn = BaseName(spell);
+            int level = Math.Max(SpellScaling.RankLevel(spell), LevelFor(bn));   // level from the preceding cast numeral
             Categories[bn] = BuffCat.Self;
-            // wiki duration (durationSec) seeds the timer; a learned value, if trusted, wins
-            double? eff = EffectiveDuration(bn) ?? (durationSec > 0 ? durationSec : (double?)null);
+            // wiki duration (durationSec) seeds the timer, scaled to the cast's upgrade level; a learned value, if trusted, wins
+            double? eff = EffectiveDuration(bn, level) ?? (durationSec > 0 ? SpellScaling.Scale(durationSec, BuffData.DurationRateFor(bn), level) : (double?)null);
 
             // Bard songs pulse (re-apply their flavor every ~6s) — detect the fast re-application and mark them as
             // songs so they never spam "buff gained". A genuine buff refresh happens near expiry, not seconds in.

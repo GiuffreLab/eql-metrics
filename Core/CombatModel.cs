@@ -113,6 +113,20 @@ namespace EqlMetrics.Core
         /// <summary>Total spells resisted by targets across this actor's abilities.</summary>
         public int SpellsResisted { get { int n = 0; foreach (var a in Abilities.Values) n += a.Resisted; return n; } }
 
+        // ---- crit rate by category (crits / landed hits) ----
+        private (long crits, long hits) CritSum(Func<DamageKind, bool> pick)
+        {
+            long c = 0, h = 0;
+            foreach (var a in Abilities.Values) if (pick(a.Kind)) { c += a.Crits; h += a.Hits; }
+            return (c, h);
+        }
+        public long MeleeCrits => CritSum(k => k == DamageKind.Melee).crits;
+        public long MeleeHits => CritSum(k => k == DamageKind.Melee).hits;
+        public long SpellCrits => CritSum(k => k == DamageKind.Nuke || k == DamageKind.Dot).crits;
+        public long SpellHits => CritSum(k => k == DamageKind.Nuke || k == DamageKind.Dot).hits;
+        public double MeleeCritPct => MeleeHits > 0 ? 100.0 * MeleeCrits / MeleeHits : 0;
+        public double SpellCritPct => SpellHits > 0 ? 100.0 * SpellCrits / SpellHits : 0;
+
         /// <summary>Melee accuracy across this actor's melee abilities (spells don't "miss" the same way).</summary>
         public AccuracyStat MeleeAccuracy()
         {

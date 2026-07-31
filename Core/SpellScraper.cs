@@ -114,7 +114,7 @@ namespace EqlMetrics.Core
             string name = Field(wt, "spellname");
             if (name.Length == 0) name = title;
             string dur = Field(wt, "duration");
-            return new SpellRow
+            return WithCategory(new SpellRow
             {
                 spell = name,
                 duration_text = dur,
@@ -125,7 +125,26 @@ namespace EqlMetrics.Core
                 cast_on_you = Field(wt, "msg_cast_on_you"),
                 cast_on_other = Field(wt, "msg_cast_on_other"),
                 wears_off = Field(wt, "msg_wears_off"),
-            };
+
+                // extra reference fields (kept for future features)
+                description = CleanWiki(Field(wt, "description")),
+                spellicon = Field(wt, "spellicon"),
+                classes = CleanWiki(MultiField(wt, "classes")),
+                skill = CleanWiki(Field(wt, "skill")),
+                range = Field(wt, "range"),
+                casting_time = Field(wt, "casting_time"),
+                fizzle_time = Field(wt, "fizzle_time"),
+                recast_time = Field(wt, "recast_time"),
+                resist = Field(wt, "resist"),
+                slots = Slots(wt),
+            });
+        }
+
+        // fill in the derived slider category once the row's fields are known (used for upgrade duration scaling)
+        private static SpellRow WithCategory(SpellRow r)
+        {
+            r.category = SpellScaling.DeriveCategory(r.spell_type, r.slots, r.duration_sec, r.wears_off, r.cast_on_other);
+            return r;
         }
 
         // Mirror of Get-Field: [ \t]* (not \s*) around the value so an EMPTY field can't
@@ -137,6 +156,39 @@ namespace EqlMetrics.Core
             var v = m.Groups[1].Value.Trim();
             if (v.StartsWith("|")) return "";   // guard against any stray template artifact
             return v;
+        }
+
+        // Captures a possibly multi-line template value (from "| name =" up to the next "| param =" line,
+        // a lone "}}", or end of text). Used for list-style fields like classes.
+        private static string MultiField(string text, string name)
+        {
+            var m = Regex.Match(text,
+                @"(?ms)^[ \t]*\|[ \t]*" + Regex.Escape(name) + @"[ \t]*=[ \t]*(.*?)(?=^[ \t]*\|[ \t]*[A-Za-z_0-9]+[ \t]*=|^[ \t]*}}|\Z)");
+            return m.Success ? m.Groups[1].Value.Trim() : "";
+        }
+
+        // Pulls each {{SpellSlotRow[Smart] | N | effect ...}} effect into a list (the spell's actual effects).
+        private static List<string> Slots(string text)
+        {
+            var list = new List<string>();
+            foreach (Match m in Regex.Matches(text, @"\{\{SpellSlotRow[A-Za-z]*\s*\|\s*\d+\s*\|\s*(?<eff>[^|}]+)"))
+            {
+                string eff = CleanWiki(m.Groups["eff"].Value);
+                if (eff.Length > 0) list.Add(eff);
+            }
+            return list;
+        }
+
+        // Reduces wiki markup to plain text: [[A|B]]->B, [[A]]->A, drops list/HTML tags and bullets, collapses space.
+        private static string CleanWiki(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            s = Regex.Replace(s, @"\[\[[^\]|]*\|([^\]]*)\]\]", "$1");
+            s = Regex.Replace(s, @"\[\[([^\]]*)\]\]", "$1");
+            s = Regex.Replace(s, @"</?(?:ul|li|br)\s*/?>", " ", RegexOptions.IgnoreCase);
+            s = s.Replace("*", " ");
+            s = Regex.Replace(s, @"\s+", " ").Trim();
+            return s;
         }
 
         // Mirror of Convert-Duration: instant/permanent/until/charge -> 0; first value of a

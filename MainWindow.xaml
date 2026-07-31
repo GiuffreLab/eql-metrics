@@ -138,11 +138,17 @@
                     <Border x:Name="TabLoot"       Tag="Loot"       Padding="10,5" CornerRadius="8" Cursor="Hand" MouseLeftButtonUp="Tab_Click"><TextBlock Text="Loot" Foreground="#8A97AB" FontSize="11" FontWeight="SemiBold"/></Border>
                 </StackPanel>
 
-                <StackPanel x:Name="OverviewPanel"/>
-                <StackPanel x:Name="BreakdownPanel"/>
-                <StackPanel x:Name="AvoidancePanel"/>
-                <StackPanel x:Name="EncountersPanel"/>
-                <StackPanel x:Name="LootPanel"/>
+                <!-- Tab bodies scroll inside a capped-height viewport so the expanded window can't run off
+                     the screen. MaxScroll.MaxHeight is set in code from the current screen's work area. -->
+                <ScrollViewer x:Name="MaxScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel>
+                        <StackPanel x:Name="OverviewPanel"/>
+                        <StackPanel x:Name="BreakdownPanel"/>
+                        <StackPanel x:Name="AvoidancePanel"/>
+                        <StackPanel x:Name="EncountersPanel"/>
+                        <StackPanel x:Name="LootPanel"/>
+                    </StackPanel>
+                </ScrollViewer>
             </StackPanel>
 
             <!-- buff/debuff notices now use the center-screen CenterFlash instead of a bottom tray -->

@@ -62,6 +62,24 @@ namespace EqlMetrics.Core
             OtherApply.Clear();
             OtherApply.AddRange(defs);
         }
+
+        // mez-line spells whose landing text isn't the common "has been mesmerized/enthralled/entranced" (those are
+        // handled by a hardcoded regex). Built from scraped cast_on_other for every non-charm charm_mez spell — e.g.
+        // bard mez "Someone's head nods." — so the mez tracker captures the whole line, not just the common verbs.
+        public static readonly List<OtherBuffDef> MezApply = new();
+        public static void SetMezApply(IEnumerable<OtherBuffDef> defs)
+        {
+            MezApply.Clear();
+            MezApply.AddRange(defs);
+        }
+        /// <summary>Is this a known mez-line spell (base-name keyed)? Used to end a mez on its wear-off line.</summary>
+        public static bool IsMezSpell(string spell)
+        {
+            string bn = BuffTracker.BaseName(spell);
+            foreach (var d in MezApply)
+                if (bn.Equals(BuffTracker.BaseName(d.Spell), StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
         // authoritative spell -> duration (seconds), base-name keyed, for ALL spells (pet/debuff too)
         public static readonly Dictionary<string, double> DurationBySpell = new(StringComparer.OrdinalIgnoreCase);
 
@@ -80,6 +98,18 @@ namespace EqlMetrics.Core
 
         public static double? DurationFor(string spell) =>
             DurationBySpell.TryGetValue(BuffTracker.BaseName(spell), out var d) ? d : (double?)null;
+
+        // per-spell upgrade duration rate (0 / 0.05 / 0.10), base-name keyed, from the scraped category
+        public static readonly Dictionary<string, double> DurationRateBySpell = new(StringComparer.OrdinalIgnoreCase);
+        /// <summary>Merge per-spell duration-scaling rates (from spells.json categories) keyed by base name.</summary>
+        public static void AddDurationRates(IEnumerable<KeyValuePair<string, double>> pairs)
+        {
+            foreach (var kv in pairs)
+                DurationRateBySpell[BuffTracker.BaseName(kv.Key)] = kv.Value;
+        }
+        /// <summary>Duration-per-level rate for a spell (0 if unknown / doesn't scale).</summary>
+        public static double DurationRateFor(string spell) =>
+            DurationRateBySpell.TryGetValue(BuffTracker.BaseName(spell), out var r) ? r : 0.0;
 
         /// <summary>Replace the active self-buff table (e.g. from a scraped spells.json).</summary>
         public static void Rebuild(IEnumerable<BuffDef> defs)

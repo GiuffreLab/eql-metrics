@@ -38,6 +38,7 @@ namespace EqlMetrics
         private HashSet<string> _buffSongs = new(StringComparer.OrdinalIgnoreCase);   // learned bard songs (no popups)
         // center-screen notifications (stealth, buffs, Quick Buff) via CenterFlash
         private CenterFlash? _flash;
+        private MezWindow? _mezWindow;   // movable pop-out listing active mez count-up timers
         private DateTime _lastStealthTime = DateTime.MinValue;
         private DateTime _lastGainTime = DateTime.MinValue;
         private DateTime _lastFadeTime = DateTime.MinValue;
@@ -145,6 +146,7 @@ namespace EqlMetrics
             BuffStore.Save(_buffDur, _buffCat, _buffSongs);
             try { _spellCts?.Cancel(); } catch { }
             try { _flash?.Close(); } catch { }
+            try { _mezWindow?.Close(); } catch { }
             try { _tailer?.Stop(); } catch { }
             try { UnregisterHotKey(new WindowInteropHelper(this).Handle, HOTKEY_ID); } catch { }
         }
@@ -178,7 +180,7 @@ namespace EqlMetrics
 
             lock (_lock)
             {
-                _stats = new SessionStats { PlayerName = player, PetName = _settings.PetName, PetAutoDetectEnabled = _settings.PetAutoDetect };
+                _stats = new SessionStats { PlayerName = player, PetName = _settings.PetName, PetAutoDetectEnabled = _settings.PetAutoDetect, MezTrackingEnabled = _settings.TrackMez };
                 _stats.Buffs.UseShared(_buffDur, _buffCat, _buffSongs);   // share learned durations/songs across sessions
             }
             _lastShownPet = _settings.PetName;
@@ -227,6 +229,7 @@ namespace EqlMetrics
 
                 BuildCoreRates(s);
                 DrawHeadSpark(s);
+                UpdateMezWindow(s);
 
                 CheckNotifications(s);
                 if (BiggestStrip.Visibility == Visibility.Visible) BuildBiggest(s);
@@ -297,6 +300,49 @@ namespace EqlMetrics
                     Bar(cd.Name.ToUpperInvariant(), FmtClock(rem), sub, CooldownChipBrush(cd.Name), frac);
                 }
             }
+
+            // Mez count-up timers live in their own movable window (see UpdateMezWindow), not the HUD strip.
+        }
+
+        // Drives the movable mez pop-out: shows it (creating on first use) while anything is mezzed, hides it
+        // when nothing is. Position persists across sessions; backdrop tracks the main overlay's transparency.
+        private void UpdateMezWindow(SessionStats s)
+        {
+            var mez = s.MezTrackingEnabled
+                ? s.MezHeld.OrderByDescending(m => m.heldSec).ToList()
+                : new List<(string target, double heldSec, double expectedSec)>();
+
+            if (mez.Count == 0) { _mezWindow?.Hide(); return; }
+
+            if (_mezWindow == null)
+            {
+                _mezWindow = new MezWindow(Backdrop.Opacity) { Owner = this };
+                const double approxW = 238;
+                double left, top;
+                if (_settings.MezWinLeft.HasValue && _settings.MezWinTop.HasValue)
+                { left = _settings.MezWinLeft.Value; top = _settings.MezWinTop.Value; }
+                else { left = Left + Width + 12; top = Top; }   // default: just to the right of the HUD
+
+                // keep it on a visible monitor: if it would fall off the right, drop it to the left of the HUD,
+                // then clamp into the virtual desktop (covers HUDs docked at a screen edge / a moved monitor).
+                double vsL = SystemParameters.VirtualScreenLeft, vsT = SystemParameters.VirtualScreenTop;
+                double vsR = vsL + SystemParameters.VirtualScreenWidth, vsB = vsT + SystemParameters.VirtualScreenHeight;
+                if (left + approxW > vsR) left = Left - approxW - 12;
+                left = Clamp(left, vsL + 4, vsR - approxW - 4);
+                top = Clamp(top, vsT + 4, vsB - 60);
+                _mezWindow.Left = left; _mezWindow.Top = top;
+
+                _mezWindow.LocationChanged += (_, __) =>
+                {
+                    if (_mezWindow == null) return;
+                    _settings.MezWinLeft = _mezWindow.Left;
+                    _settings.MezWinTop = _mezWindow.Top;
+                };
+            }
+            _mezWindow.SetBackdropAlpha(Backdrop.Opacity);
+            _mezWindow.Update(mez);
+            if (!_mezWindow.IsVisible) _mezWindow.Show();
+            _mezWindow.Topmost = true;   // keep it above the game/other topmost overlays
         }
 
         // A compact horizontal stat bar: label left, value right. Time-series stats (a non-null series) get a
@@ -829,6 +875,7 @@ namespace EqlMetrics
                 og.Children.Add(StatBox("Landed", acc.Landed.ToString("0"), Grp));
                 og.Children.Add(StatBox("Missed", acc.FlatMiss.ToString("0"), Dim));
                 og.Children.Add(StatBox("Avoided", acc.Avoided.ToString("0"), Nuke));
+                if (s.PlayerMeleeHits > 0) og.Children.Add(StatBox("Crit rate", s.PlayerMeleeCritPct.ToString("0") + "%", Gold));
                 p.Children.Add(og);
 
                 long asw = Math.Max(1, acc.Swings);
@@ -863,6 +910,7 @@ namespace EqlMetrics
                 sg.Children.Add(StatBox("Interrupted", s.SpellInterrupts.ToString("0"), DmgIn));
                 sg.Children.Add(StatBox("Fizzle %", s.SpellFizzlePct.ToString("0") + "%", Dim));
                 sg.Children.Add(StatBox("Interrupt %", s.SpellInterruptPct.ToString("0") + "%", DmgIn));
+                if (s.PlayerSpellHits > 0) sg.Children.Add(StatBox("Crit rate", s.PlayerSpellCritPct.ToString("0") + "%", Gold));
                 p.Children.Add(sg);
 
                 var resDetail = s.PlayerSpellResistDetail.ToList();
@@ -884,7 +932,8 @@ namespace EqlMetrics
             sum.Children.Add(StatBox("Dmg taken", s.DamageTaken.ToString("0"), DmgIn));
             sum.Children.Add(StatBox("DTPS", s.IncomingDpsMe.ToString("0.0"), DmgIn));
             sum.Children.Add(StatBox("Biggest hit", s.BiggestHitTaken.ToString("0"), DmgIn));
-            sum.Children.Add(StatBox("Stuns", s.StunsTaken.ToString("0"), Nuke));
+            sum.Children.Add(StatBox("Stuns taken", s.StunsTaken.ToString("0"), Nuke));
+            if (s.StunsAvoided + s.StunsTaken > 0) sum.Children.Add(StatBox("Stun avoid", s.AvoidStunPct.ToString("0") + "%", Melee));
             p.Children.Add(sum);
 
             p.Children.Add(SectionHeader("HOW YOU AVOID"));
@@ -1419,6 +1468,14 @@ namespace EqlMetrics
             _settings.Save();
         }
 
+        public void SetTrackMez(bool on)
+        {
+            _settings.TrackMez = on;
+            lock (_lock) { _stats.MezTrackingEnabled = on; if (!on) _stats.Mez.Clear(); }
+            _settings.Save();
+            Refresh();
+        }
+
         private void ApplyExpanded(bool expanded)
         {
             MaxPanel.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
@@ -1467,6 +1524,11 @@ namespace EqlMetrics
             // Minimized vertical is now a fixed-width column of compact bars (previously auto-width to keep the
             // one-line chip strip from wrapping — no longer needed since bars are one-per-row by design).
             else { SizeToContent = SizeToContent.Height; Width = 330; MinWidth = 0; }
+
+            // Cap the scrollable tab area to the current screen so the expanded window can't grow off-screen;
+            // content taller than the cap scrolls instead. Leave room for the title bar, tabs, and footer.
+            double screenH = SystemParameters.WorkArea.Height;
+            MaxScroll.MaxHeight = Math.Max(320, screenH - 200);
         }
 
         public void SetLayoutHorizontal(bool on) { _settings.LayoutHorizontal = on; ApplyLayout(); _settings.Save(); }

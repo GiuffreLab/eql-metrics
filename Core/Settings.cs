@@ -30,6 +30,9 @@ namespace EqlMetrics.Core
         public bool NotifHarmTouch { get; set; } = true;   // Harm Touch ready (SK)
         public bool NotifLayOnHands { get; set; } = true;  // Lay on Hands ready (PAL)
         public bool NotifMend { get; set; } = true;        // Mend self-heal
+        public bool TrackMez { get; set; } = true;         // count-up mez timers (shown in their own movable window)
+        public double? MezWinLeft { get; set; }            // mez window position (null = default, next to the HUD)
+        public double? MezWinTop { get; set; }
         public int NotifMaxOnScreen { get; set; } = 3;     // 1..5 rising notifications at once
 
         private static string Dir =>

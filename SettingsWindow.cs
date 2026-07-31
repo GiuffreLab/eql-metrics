@@ -50,6 +50,7 @@ namespace EqlMetrics
             root.Children.Add(Toggle("Harm Touch ready (SK)", _s.NotifHarmTouch, on => { _s.NotifHarmTouch = on; Save(); }));
             root.Children.Add(Toggle("Lay on Hands ready (PAL)", _s.NotifLayOnHands, on => { _s.NotifLayOnHands = on; Save(); }));
             root.Children.Add(Toggle("Mend", _s.NotifMend, on => { _s.NotifMend = on; Save(); }));
+            root.Children.Add(Toggle("Mez timers (count-up HUD)", _s.TrackMez, on => _m.SetTrackMez(on)));
             root.Children.Add(SliderRow("Max on screen", 1, 5, _s.NotifMaxOnScreen, v => { _s.NotifMaxOnScreen = (int)Math.Round(v); Save(); }, whole: true));
 
             root.Children.Add(Section("CHARACTER & PARSE"));

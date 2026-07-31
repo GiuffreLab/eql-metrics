@@ -30,6 +30,7 @@ namespace EqlMetrics.Core
         public long Dodged, Parried, Blocked, Riposted;      // the player actively avoided a swing
         public long IncomingMissed;                          // the mob simply missed
         public long StunsTaken;
+        public long StunsAvoided;                            // "You avoid the stunning blow."
 
         public void AvoidedByYou(string how, DateTime t)
         {
@@ -44,6 +45,9 @@ namespace EqlMetrics.Core
         }
         public void IncomingMiss(DateTime t) { Touch(t); IncomingMissed++; }
         public void Stunned(DateTime t) { Touch(t); StunsTaken++; }
+        public void StunAvoided(DateTime t) { Touch(t); StunsAvoided++; }
+        /// <summary>Share of stun attempts you shrugged off (avoided / (avoided + landed)).</summary>
+        public double AvoidStunPct => (StunsAvoided + StunsTaken) > 0 ? 100.0 * StunsAvoided / (StunsAvoided + StunsTaken) : 0;
 
         public long ActiveAvoids => Dodged + Parried + Blocked + Riposted;
         public long SwingsAtYou => MeleeSwingsLanded + ActiveAvoids + IncomingMissed;
